@@ -1,0 +1,21 @@
+{
+  "_comment": "Optional. Merge into ~/.claude/settings.json (or .claude/settings.json in a project). These hooks reuse the bundled claudecode-memory adapter (subcommands 'pre'/'post', which call the gateway over HTTP) so a session both pulls a context block at start and is ingested at stop. They are independent of the MCP server in .mcp.json; use either or both.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "claudecode-memory pre" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          { "type": "command", "command": "claudecode-memory post" }
+        ]
+      }
+    ]
+  }
+}

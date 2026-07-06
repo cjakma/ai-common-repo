@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ai-common-repo.memory.v1",
+  "type": "object",
+  "required": ["content", "type", "scope"],
+  "properties": {
+    "type": {"enum": ["preference","constraint","decision","workflow","project_fact","warning","credential_hint","handoff","todo_context"]},
+    "scope": {"enum": ["user","project","repo","global"]},
+    "content": {"type": "string"},
+    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    "tags": {"type": "array", "items": {"type": "string"}}
+  }
+}

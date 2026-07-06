@@ -1,0 +1,12 @@
+# High-throughput extraction via a central vLLM OpenAI-compatible endpoint.
+models:
+  default_backend: local-vllm
+  backends:
+    local-vllm:
+      provider: openai_compatible
+      base_url: http://127.0.0.1:8000/v1
+      api_key: EMPTY
+      chat_model: Qwen/Qwen2.5-Coder-14B-Instruct
+  tasks:
+    extraction: local-vllm
+    summarization: local-vllm

@@ -1,0 +1,148 @@
+# ai-common-repo default configuration.
+# Every runtime value lives here (or is overridable by env AICR_*). No business
+# logic hardcodes these — see ai_common_repo.core.config for the schema/loader.
+
+server:
+  host: 127.0.0.1
+  port: 28787
+
+storage:
+  # ~ and env vars are expanded by the loader.
+  db_path: ~/.local/share/ai-common-repo/memory.db
+  raw_log_dir: ~/.local/share/ai-common-repo/sessions
+  # auto => sqlite-vec when importable, else pure-python brute force.
+  vector_backend: auto        # auto | bruteforce | sqlite-vec
+
+identity:
+  default_user_id: painmaster
+
+models:
+  default_backend: local-ollama
+  backends:
+    local-ollama:
+      provider: openai_compatible
+      base_url: http://127.0.0.1:11434/v1
+      api_key: ollama
+      chat_model: qwen2.5-coder:14b
+      embedding_provider: ollama
+      embedding_base_url: http://127.0.0.1:11434
+      embedding_model: nomic-embed-text
+    local-vllm:
+      provider: openai_compatible
+      base_url: http://127.0.0.1:8000/v1
+      api_key: EMPTY
+      chat_model: Qwen/Qwen2.5-Coder-14B-Instruct
+  # Per-task routing. Falls back to default_backend when a task is unset.
+  tasks:
+    extraction: local-ollama
+    summarization: local-ollama
+    conflict_resolution: local-ollama
+    reranking: local-vllm
+
+memory:
+  max_context_items: 12
+  max_context_chars: 12000
+  profile_max_chars: 3000
+  recent_max_items: 5
+  enable_conflict_resolution: true
+  auto_extract: true
+  # When no model backend is reachable, fall back to heuristic extraction.
+  allow_heuristic_fallback: true
+  # Defer extraction/profile rebuild to the background worker. Off => inline.
+  async_jobs: false
+  # Auto-forget expired/decayed memories (run by a periodic job).
+  forget_enabled: true
+  forget_confidence_floor: 0.0   # >0 => also expire memories below this confidence
+  forget_interval_s: 3600
+  # Fuse document chunks (not just memories) into recall/search results.
+  include_documents: true
+
+# Embedding / hybrid-search tuning.
+embedding:
+  dim: 256        # offline hash-embedding width (ignored by real model backends)
+  rrf_k: 60       # reciprocal-rank-fusion constant for hybrid search
+
+# RAG document ingest guards.
+documents:
+  max_content_chars: 500000
+  max_chunks: 2000
+  chunk_max_chars: 1200
+  chunk_overlap_chars: 150
+  # Roots a server-side path ingest may read from. Empty => path ingest disabled
+  # (only inline content accepted), which is the safe default.
+  allowed_roots: []
+
+# Background worker (local-first job queue). Started by the server lifespan when
+# enabled, or by the standalone `ai-common-repo worker` entrypoint.
+workers:
+  enabled: false
+  poll_interval_s: 0.5
+  max_attempts: 3
+  backoff_base_s: 1.0
+  backoff_max_s: 300.0
+
+# Polling connectors (Phase 4). Off by default. Tokens are read from the named
+# env var at sync time only and never persisted. Outbound calls are locked to the
+# host of base_url (https + timeout). Polled docs reuse the RAG chunk/embed path.
+connectors:
+  github:
+    enabled: false
+    token_env: GITHUB_TOKEN        # read at runtime only; never stored
+    base_url: https://api.github.com
+    repos: []                      # ["owner/name", ...]
+    user_id: null
+    project_id: null
+    poll_interval_s: 900
+    max_items_per_sync: 50
+    timeout_s: 20.0
+  notion:
+    enabled: false
+    token_env: NOTION_TOKEN
+    base_url: https://api.notion.com
+    databases: []                  # ["database_id", ...]
+    user_id: null
+    project_id: null
+    poll_interval_s: 900
+    max_items_per_sync: 50
+    timeout_s: 20.0
+    api_version: "2022-06-28"
+
+# Inter-harness contract-inbox queue (HARNESS_COMMON_SPEC §4). The gateway only
+# queues tasks; each harness runs its own pull runner for its executor name.
+harness:
+  executors: [claudecode, openclaw, opencode, agy]   # agy = reserved, unused yet
+  default_timeout_s: 1800
+  stale_multiplier: 2      # claim older than N x timeout_s counts as stale
+  max_requeues: 1          # stale tasks return to pending at most this often
+
+adapters:
+  codex:
+    enabled: true
+    inject_mode: prompt-prefix
+  claudecode:
+    enabled: true
+    integration: wrapper-hooks
+  antigravity-cli:
+    enabled: true
+    integration: wrapper-hooks
+
+privacy:
+  mode: local-first
+  redact_secrets: true
+  external_model_requires_redaction: true
+  store_raw_prompts: true
+  store_raw_outputs: false
+  raw_session_retention_days: 14
+  deny_paths:
+    - .env
+    - .env.*
+    - id_rsa
+    - "*.pem"
+  secret_patterns:
+    - "sk-[A-Za-z0-9_-]{8,}"
+    - "ghp_[A-Za-z0-9_]{20,}"
+    - "gho_[A-Za-z0-9_]{20,}"
+    - "sm_[A-Za-z0-9_]{16,}"
+    - "xox[baprs]-[A-Za-z0-9-]{10,}"
+    - "AKIA[0-9A-Z]{16}"
+    - "-----BEGIN [A-Z ]*PRIVATE KEY-----"

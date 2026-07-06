@@ -1,0 +1,10 @@
+privacy:
+  mode: local-first
+  redact_secrets: true
+  external_model_requires_redaction: true
+  store_raw_prompts: false
+  store_raw_outputs: false
+  raw_session_retention_days: 3
+memory:
+  auto_extract: true
+  allow_heuristic_fallback: true

@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ai-common-repo.session.v1",
+  "type": "object",
+  "required": ["tool", "messages"],
+  "properties": {
+    "schema": {"type": "string"},
+    "session_id": {"type": "string"},
+    "tool": {"type": "string"},
+    "wrapper": {"type": "boolean"},
+    "user_id": {"type": "string"},
+    "project_id": {"type": "string"},
+    "cwd": {"type": "string"},
+    "git": {"type": "object"},
+    "messages": {"type": "array", "items": {
+      "type": "object", "required": ["role", "content"],
+      "properties": {"role": {"type": "string"}, "content": {"type": "string"}}}},
+    "artifacts": {"type": "object"}
+  }
+}

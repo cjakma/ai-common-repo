@@ -1,0 +1,15 @@
+# Fully local, privacy-strict: Ollama for chat + embedding, no external calls.
+models:
+  default_backend: local-ollama
+  backends:
+    local-ollama:
+      provider: openai_compatible
+      base_url: http://127.0.0.1:11434/v1
+      api_key: ollama
+      chat_model: qwen2.5-coder:14b
+      embedding_provider: ollama
+      embedding_base_url: http://127.0.0.1:11434
+      embedding_model: nomic-embed-text
+privacy:
+  mode: local-first
+  store_raw_outputs: false

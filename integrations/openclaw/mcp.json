@@ -1,0 +1,9 @@
+{
+  "_comment": "OpenClaw MCP registration. OpenClaw consumes MCP servers via its 'mcpServers' map (Streamable-HTTP transport). Place this in OpenClaw's config dir (e.g. ~/.openclaw/mcp.json) or merge into an existing config. Adjust the key name if your OpenClaw build uses a different config schema; the url is the stable part.",
+  "mcpServers": {
+    "ai-common-repo": {
+      "transport": "http",
+      "url": "http://127.0.0.1:28787/mcp"
+    }
+  }
+}

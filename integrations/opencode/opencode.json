@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "ai-common-repo": {
+      "type": "remote",
+      "url": "http://127.0.0.1:28787/mcp",
+      "enabled": true
+    }
+  }
+}

@@ -1,0 +1,13 @@
+# keep the build context (and image) clean — host-only / dev-loop artifacts
+.venv/
+.git/
+.night/
+.pytest_cache/
+.ruff_cache/
+**/__pycache__/
+*.egg-info/
+.acr*
+# nightly autonomous-dev bookkeeping (not part of the product)
+PLAN.md
+PROGRESS.md
+REVIEW.md

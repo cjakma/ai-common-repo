@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-common-repo"
+version = "0.1.0"
+description = "Local-first shared long-term memory / context gateway for AI coding agents (Codex, ClaudeCode, Antigravity-CLI, vLLM, Ollama)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "painmaster" }]
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pydantic>=2.6",
+    "PyYAML>=6.0",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.4"]
+
+[project.scripts]
+ai-common-repo = "ai_common_repo_cli.__main__:main"
+codex-memory = "codex_memory.__main__:main"
+claudecode-memory = "claudecode_hook.__main__:main"
+antigravity-memory = "antigravity_hook.__main__:main"
+
+# Monorepo: each package lives under its own source root. Nothing is hardcoded
+# in code paths; discovery is declared here only.
+[tool.setuptools.packages.find]
+where = ["packages/gateway", "packages/cli", "packages/adapters"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"

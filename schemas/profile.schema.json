@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ai-common-repo.profile.v1",
+  "type": "object",
+  "properties": {
+    "user_id": {"type": "string"},
+    "project_id": {"type": ["string","null"]},
+    "stable": {"type": "array", "items": {"type": "string"}},
+    "dynamic": {"type": "array", "items": {"type": "string"}}
+  }
+}
