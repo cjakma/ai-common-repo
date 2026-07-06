@@ -10,6 +10,8 @@ worker_id they claimed with.
 from __future__ import annotations
 
 import json
+import logging
+from typing import TYPE_CHECKING
 
 from ..core import constants as C
 from ..core.config import HarnessConfig
@@ -19,13 +21,21 @@ from ..core.models import (
 )
 from ..storage.repositories import AuditRepository, HarnessTaskRepository
 
+if TYPE_CHECKING:  # avoid importing the events package into core queue logic
+    from ..events.service import EventService
+
+_log = logging.getLogger("ai_common_repo.harness")
+
 
 class HarnessQueueService:
     def __init__(self, repo: HarnessTaskRepository, audit: AuditRepository,
-                 cfg: HarnessConfig):
+                 cfg: HarnessConfig, events: "EventService | None" = None):
         self._repo = repo
         self._audit = audit
         self._cfg = cfg
+        # Optional event publisher. Publishing is best-effort: a webhook/outbox
+        # failure must never fail a harness status update (design §12).
+        self._events = events
 
     def create(self, req: HarnessTaskCreate) -> HarnessTask:
         self._check_executor(req.executor)
@@ -83,6 +93,16 @@ class HarnessQueueService:
             raise ValueError(f"transition to {req.status!r} no longer applies")
         self._audit.log("harness_task_status", "harness_task", task_id,
                         {"status": req.status, "worker_id": req.worker_id})
+        # Best-effort event publication AFTER the status transition committed. A
+        # publish failure is swallowed (logged + audited) so the API still
+        # succeeds — harness completion must not roll back on a notification bug.
+        if self._events is not None:
+            try:
+                self._events.publish_status_changed(current, updated)
+            except Exception as exc:  # noqa: BLE001 - notifications are best-effort
+                _log.warning("event publish failed for %s: %r", task_id, exc)
+                self._audit.log("event_enqueue_failed", "harness_task", task_id,
+                                {"status": req.status, "error": repr(exc)})
         return updated
 
     def get(self, task_id: str) -> HarnessTask | None:

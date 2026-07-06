@@ -8,7 +8,7 @@ from typing import Any
 
 from ..core import constants as C
 from ..core.ids import now_iso, prefixed
-from ..core.models import HarnessTask, Memory, Profile
+from ..core.models import HarnessTask, Memory, OutboxEvent, Profile
 from .database import Database
 
 
@@ -534,6 +534,149 @@ class HarnessTaskRepository:
         params.append(limit)
         rows = self._db.conn.execute(" ".join(sql), params).fetchall()
         return [_row_to_task(r) for r in rows]
+
+
+def _row_to_outbox(row: Any) -> OutboxEvent:
+    return OutboxEvent(
+        id=row["id"], event_id=row["event_id"], event_type=row["event_type"],
+        aggregate_type=row["aggregate_type"], aggregate_id=row["aggregate_id"],
+        subscription_id=row["subscription_id"],
+        payload=json.loads(row["payload_json"]), status=row["status"],
+        attempts=row["attempts"], max_attempts=row["max_attempts"],
+        next_attempt_at=row["next_attempt_at"], last_error=row["last_error"],
+        http_status=row["http_status"], created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+class EventOutboxRepository:
+    """Durable event-delivery outbox. One row per (event × subscription); the
+    delivery worker claims due rows (pending->delivering), sends them, and marks
+    the outcome. All state transitions are guarded UPDATEs so a second worker (or
+    a crash mid-delivery) cannot double-count attempts."""
+
+    def __init__(self, db: Database):
+        self._db = db
+
+    def add(self, ev: OutboxEvent) -> OutboxEvent:
+        c = self._db.conn
+        c.execute(
+            """INSERT INTO event_outbox
+               (id,event_id,event_type,aggregate_type,aggregate_id,subscription_id,
+                payload_json,status,attempts,max_attempts,next_attempt_at,last_error,
+                http_status,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (ev.id, ev.event_id, ev.event_type, ev.aggregate_type, ev.aggregate_id,
+             ev.subscription_id, json.dumps(ev.payload, ensure_ascii=False),
+             ev.status, ev.attempts, ev.max_attempts, ev.next_attempt_at,
+             ev.last_error, ev.http_status, ev.created_at, ev.updated_at),
+        )
+        c.commit()
+        return ev
+
+    def get(self, delivery_id: str) -> OutboxEvent | None:
+        row = self._db.conn.execute(
+            "SELECT * FROM event_outbox WHERE id=?", (delivery_id,)).fetchone()
+        return _row_to_outbox(row) if row else None
+
+    def by_event(self, event_id: str) -> list[OutboxEvent]:
+        rows = self._db.conn.execute(
+            "SELECT * FROM event_outbox WHERE event_id=? ORDER BY created_at",
+            (event_id,)).fetchall()
+        return [_row_to_outbox(r) for r in rows]
+
+    def list(self, *, status: str | None = None, event_type: str | None = None,
+             aggregate_id: str | None = None, limit: int = 100) -> list[OutboxEvent]:
+        sql = ["SELECT * FROM event_outbox WHERE 1=1"]
+        params: list = []
+        if status is not None:
+            sql.append("AND status=?")
+            params.append(status)
+        if event_type is not None:
+            sql.append("AND event_type=?")
+            params.append(event_type)
+        if aggregate_id is not None:
+            sql.append("AND aggregate_id=?")
+            params.append(aggregate_id)
+        sql.append("ORDER BY created_at DESC LIMIT ?")
+        params.append(limit)
+        rows = self._db.conn.execute(" ".join(sql), params).fetchall()
+        return [_row_to_outbox(r) for r in rows]
+
+    def claim_due(self, now: str, limit: int = 50) -> list[OutboxEvent]:
+        """Atomically move up to ``limit`` due pending rows to ``delivering``
+        (bumping attempts) and return them. The guarded per-row UPDATE means two
+        workers never take the same delivery."""
+        c = self._db.conn
+        rows = c.execute(
+            """SELECT id FROM event_outbox
+               WHERE status=? AND next_attempt_at<=?
+               ORDER BY next_attempt_at LIMIT ?""",
+            (C.OUTBOX_STATUS_PENDING, now, limit),
+        ).fetchall()
+        claimed: list[OutboxEvent] = []
+        for r in rows:
+            got = c.execute(
+                """UPDATE event_outbox
+                   SET status=?, attempts=attempts+1, updated_at=?
+                   WHERE id=? AND status=?
+                   RETURNING *""",
+                (C.OUTBOX_STATUS_DELIVERING, now_iso(), r["id"],
+                 C.OUTBOX_STATUS_PENDING),
+            ).fetchone()
+            if got is not None:
+                claimed.append(_row_to_outbox(got))
+        c.commit()
+        return claimed
+
+    def mark_delivered(self, delivery_id: str, http_status: int | None) -> None:
+        c = self._db.conn
+        c.execute(
+            "UPDATE event_outbox SET status=?, http_status=?, last_error=NULL, "
+            "updated_at=? WHERE id=?",
+            (C.OUTBOX_STATUS_DELIVERED, http_status, now_iso(), delivery_id))
+        c.commit()
+
+    def reschedule(self, delivery_id: str, next_attempt_at: str, error: str,
+                   http_status: int | None) -> None:
+        """Return a failed delivery to ``pending`` for a later retry."""
+        c = self._db.conn
+        c.execute(
+            "UPDATE event_outbox SET status=?, next_attempt_at=?, last_error=?, "
+            "http_status=?, updated_at=? WHERE id=?",
+            (C.OUTBOX_STATUS_PENDING, next_attempt_at, error[:2000], http_status,
+             now_iso(), delivery_id))
+        c.commit()
+
+    def mark_terminal(self, delivery_id: str, status: str, error: str | None,
+                      http_status: int | None) -> None:
+        """Final resting state: ``dead_letter`` (retries exhausted) or ``failed``
+        (permanent non-retryable response)."""
+        c = self._db.conn
+        c.execute(
+            "UPDATE event_outbox SET status=?, last_error=?, http_status=?, "
+            "updated_at=? WHERE id=?",
+            (status, (error or "")[:2000], http_status, now_iso(), delivery_id))
+        c.commit()
+
+    def requeue(self, delivery_id: str, now: str) -> OutboxEvent | None:
+        """Manual retry: force a non-pending row back to pending, due now."""
+        c = self._db.conn
+        row = c.execute(
+            "UPDATE event_outbox SET status=?, next_attempt_at=?, updated_at=? "
+            "WHERE id=? RETURNING *",
+            (C.OUTBOX_STATUS_PENDING, now, now_iso(), delivery_id)).fetchone()
+        c.commit()
+        return _row_to_outbox(row) if row else None
+
+    def counts(self) -> dict[str, int]:
+        rows = self._db.conn.execute(
+            "SELECT status, COUNT(*) AS n FROM event_outbox GROUP BY status"
+        ).fetchall()
+        out = {s: 0 for s in C.OUTBOX_STATUSES}
+        for r in rows:
+            out[r["status"]] = r["n"]
+        return out
 
 
 class ConnectorStateRepository:

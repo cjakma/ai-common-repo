@@ -4,6 +4,7 @@ thin shells over this single object."""
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from .core import constants as C
@@ -16,6 +17,8 @@ from .core.models import (
     StoreMemoryRequest,
 )
 from .connectors import ConnectorDoc, build_connectors
+from .events.dispatcher import WebhookDispatcher
+from .events.service import EventService
 from .extraction.chunker import chunk_text
 from .extraction.pipeline import ExtractionPipeline
 from .harness import HarnessQueueService
@@ -28,8 +31,8 @@ from .search.vector import build_vector_index
 from .storage.database import Database
 from .storage.repositories import (
     AuditRepository, ConnectorStateRepository, DocumentRepository,
-    EmbeddingRepository, HarnessTaskRepository, MemoryRepository,
-    ProfileRepository, SessionRepository,
+    EmbeddingRepository, EventOutboxRepository, HarnessTaskRepository,
+    MemoryRepository, ProfileRepository, SessionRepository,
 )
 from .workers.queue import SqliteJobQueue
 
@@ -67,8 +70,15 @@ class MemoryService:
             include_documents=cfg.memory.include_documents)
         self.context_builder = ContextBuilder(cfg.memory)
         self.connectors = build_connectors(cfg.connectors)
+        # Event subscription / webhook layer. The outbox tables always exist; the
+        # EventService only publishes when notifications are enabled, and delivery
+        # is done by the (optional) EventDeliveryWorker via this dispatcher.
+        self.event_outbox = EventOutboxRepository(self._db)
+        self.events = EventService(self.event_outbox, cfg.notifications)
+        self.event_dispatcher = WebhookDispatcher(self.event_outbox, cfg.notifications)
         self.harness = HarnessQueueService(
-            HarnessTaskRepository(self._db), self.audit, cfg.harness)
+            HarnessTaskRepository(self._db), self.audit, cfg.harness,
+            events=self.events)
 
     # -- identity helpers ----------------------------------------------------
     def _user(self, user_id: str | None) -> str:
@@ -183,6 +193,51 @@ class MemoryService:
 
     def backend_health(self) -> list[dict]:
         return [h.__dict__ for h in self.backends.health_all()]
+
+    # -- events / webhook subscriptions --------------------------------------
+    def list_events(self, *, status: str | None = None,
+                    event_type: str | None = None, aggregate_id: str | None = None,
+                    limit: int = 100) -> list[dict]:
+        return [e.model_dump() for e in self.event_outbox.list(
+            status=status, event_type=event_type, aggregate_id=aggregate_id,
+            limit=limit)]
+
+    def get_event(self, event_id: str) -> list[dict]:
+        """All (per-subscription) deliveries for one event_id."""
+        return [e.model_dump() for e in self.event_outbox.by_event(event_id)]
+
+    def event_outbox_counts(self) -> dict[str, int]:
+        return self.event_outbox.counts()
+
+    def list_webhook_subscriptions(self) -> list[dict]:
+        """Redacted subscription views. The signing secret is never returned —
+        only the env var name and whether it resolves are exposed."""
+        out = []
+        for sub in self.cfg.notifications.subscriptions:
+            out.append({
+                "id": sub.id, "name": sub.name, "enabled": sub.enabled,
+                "type": sub.type, "url": sub.url,
+                "event_types": sub.event_types, "filters": sub.filters,
+                "secret_env": sub.secret_env,
+                "signed": bool(sub.secret_env and os.environ.get(sub.secret_env)),
+            })
+        return out
+
+    def test_webhook_subscription(self, subscription_id: str) -> dict | None:
+        """Enqueue a synthetic ``webhook.test`` event for one subscription and
+        attempt delivery immediately. Returns the resulting delivery row, or None
+        if the subscription id is unknown."""
+        sub = next((s for s in self.cfg.notifications.subscriptions
+                    if s.id == subscription_id), None)
+        if sub is None:
+            return None
+        row = self.events.enqueue_for_subscription(
+            sub, C.EVENT_WEBHOOK_TEST, "webhook_subscription", sub.id,
+            {"subscription_id": sub.id, "message": "ai-common-repo webhook test",
+             "sent_at": now_iso()})
+        self.event_dispatcher.run_pending()
+        delivered = self.event_outbox.get(row.id)
+        return delivered.model_dump() if delivered else row.model_dump()
 
     # -- job handlers --------------------------------------------------------
     @property

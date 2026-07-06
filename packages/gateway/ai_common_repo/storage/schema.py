@@ -1,7 +1,7 @@
 """SQLite DDL kept in one place. Schema version lets migrate-db evolve it."""
 from __future__ import annotations
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 DDL = """
 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -162,6 +162,35 @@ CREATE TABLE IF NOT EXISTS harness_tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_harness_claim
   ON harness_tasks(executor, status, priority DESC, created_at);
+
+-- Event outbox (schema v6, event subscription/webhook layer). The gateway
+-- publishes domain events (e.g. harness.task.status_changed) here inside the
+-- same process right after a successful state change; an async delivery worker
+-- fans them out to configured HTTP webhook subscriptions. One row per
+-- (event × subscription) so each destination gets its own attempt/retry state
+-- and its own X-AICR-Delivery-ID. Never stores secrets — only payloads.
+CREATE TABLE IF NOT EXISTS event_outbox (
+  id TEXT PRIMARY KEY,                       -- delivery id (dlv_...)
+  event_id TEXT NOT NULL,                    -- envelope id (evt_...), shared per event
+  event_type TEXT NOT NULL,
+  aggregate_type TEXT NOT NULL,
+  aggregate_id TEXT NOT NULL,
+  subscription_id TEXT NOT NULL,
+  payload_json TEXT NOT NULL,                -- full envelope JSON = the webhook body
+  status TEXT NOT NULL DEFAULT 'pending',    -- pending|delivering|delivered|failed|dead_letter
+  attempts INTEGER NOT NULL DEFAULT 0,
+  max_attempts INTEGER NOT NULL DEFAULT 8,
+  next_attempt_at TEXT NOT NULL,             -- earliest time a (re)delivery may run
+  last_error TEXT,
+  http_status INTEGER,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(event_id, subscription_id)
+);
+CREATE INDEX IF NOT EXISTS idx_event_outbox_status_next
+  ON event_outbox(status, next_attempt_at);
+CREATE INDEX IF NOT EXISTS idx_event_outbox_event ON event_outbox(event_id);
+CREATE INDEX IF NOT EXISTS idx_event_outbox_type ON event_outbox(event_type);
 
 -- Incremental polling cursor per connector (Phase 4). One opaque cursor string
 -- per (connector, resource); the connector encodes whatever it needs into it.

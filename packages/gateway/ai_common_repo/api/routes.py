@@ -125,3 +125,36 @@ def harness_list(request: Request, status: str | None = None,
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {"tasks": [_task_view(t) for t in tasks]}
+
+
+# -- event subscription / webhook layer ---------------------------------------
+@router.get("/v1/events")
+def events_list(request: Request, status: str | None = None,
+                event_type: str | None = None, aggregate_id: str | None = None,
+                limit: int = 100) -> dict:
+    svc = _svc(request)
+    events = svc.list_events(status=status, event_type=event_type,
+                             aggregate_id=aggregate_id, limit=limit)
+    return {"events": events, "counts": svc.event_outbox_counts()}
+
+
+@router.get("/v1/events/{event_id}")
+def events_get(event_id: str, request: Request) -> dict:
+    deliveries = _svc(request).get_event(event_id)
+    if not deliveries:
+        raise HTTPException(status_code=404, detail=f"unknown event {event_id!r}")
+    return {"event_id": event_id, "deliveries": deliveries}
+
+
+@router.get("/v1/webhook-subscriptions")
+def webhook_subscriptions(request: Request) -> dict:
+    return {"subscriptions": _svc(request).list_webhook_subscriptions()}
+
+
+@router.post("/v1/webhook-subscriptions/{subscription_id}/test")
+def webhook_subscription_test(subscription_id: str, request: Request) -> dict:
+    delivery = _svc(request).test_webhook_subscription(subscription_id)
+    if delivery is None:
+        raise HTTPException(status_code=404,
+                            detail=f"unknown subscription {subscription_id!r}")
+    return {"delivery": delivery}

@@ -125,6 +125,53 @@ per-agent integration details.
 `configs/default.yaml` → `~/.config/ai-common-repo/config.yaml` (or `$AICR_CONFIG`)
 → `AICR_*` env scalars (`AICR_SERVER__PORT=29000`).
 
+## Event subscription / webhooks
+
+The gateway can push domain events out instead of forcing consumers to poll. When
+a harness task changes state (`POST /v1/harness/tasks/{id}/status`), a
+`harness.task.status_changed` event is published into a **durable SQLite outbox**
+right after the transition commits; an async delivery worker fans it out to
+config-driven generic **HTTP webhook subscriptions**. Core stays platform-neutral
+— there is no Slack/Discord/Hermes code, just signed POSTs to configured URLs.
+
+Guarantees & behaviour:
+- **Best-effort / fail-soft**: a webhook or outbox failure never fails the status
+  API — the publish is wrapped and, on error, audited as `event_enqueue_failed`.
+- **At-least-once** delivery: one outbox row per (event × subscription), each with
+  its own delivery id, attempt counter and retry state.
+- **Retry/backoff**: `2xx` = delivered; `408/429/5xx`/network error retry with
+  exponential backoff + jitter; other `4xx` fail permanently; exhausted attempts
+  move to `dead_letter`.
+- **HMAC signing**: when a subscription sets `secret_env`, requests carry
+  `X-AICR-Signature: v1=<hmac_sha256(secret, "<timestamp>.<body>")>` plus
+  `X-AICR-Event-ID / -Event-Type / -Delivery-ID / -Timestamp`. The secret is read
+  from the named env var at send time only — never stored or logged.
+- **SSRF guard**: only loopback/private webhook hosts are allowed unless
+  `allow_external_urls: true`.
+
+Config (default **off**, see `notifications:` in `configs/default.yaml`):
+
+```yaml
+notifications:
+  enabled: true
+  outbox_poll_interval_s: 5
+  subscriptions:
+    - id: hermes-origin-harness-terminal
+      url: http://127.0.0.1:8099/internal/events/harness
+      secret_env: AI_COMMON_REPO_WEBHOOK_SECRET   # env var NAME, not the secret
+      event_types: [harness.task.status_changed]
+      filters:
+        executor: [claudecode, openclaw, opencode]
+        new_status: [done, failed, cancelled]
+        requester: [hermes]
+```
+
+Read/test surface:
+- `GET /v1/events?status=&event_type=&aggregate_id=&limit=` — outbox rows + counts
+- `GET /v1/events/{event_id}` — per-subscription deliveries for one event
+- `GET /v1/webhook-subscriptions` — configured subscriptions (secret redacted)
+- `POST /v1/webhook-subscriptions/{id}/test` — send a synthetic `webhook.test`
+
 ## Status
 
 Core memory is **live** and wired into the ClaudeCode/Antigravity wrapper
@@ -149,6 +196,9 @@ Built on top of that (test-covered, degrade-gracefully offline):
 - **Polling connectors** (`connectors/`, default **off**): GitHub / Notion poll
   into the RAG document pipeline. Tokens are read from env at sync time only and
   never persisted; outbound HTTP is https + host-allow-list + timeout bounded.
+- **Event subscription / webhooks** (`events/`, default **off**): durable event
+  outbox + async HMAC-signed HTTP delivery with retry/backoff and dead-lettering,
+  publishing harness task status changes. See "Event subscription / webhooks".
 
 Storage lives outside the repo at `~/.local/share/ai-common-repo/memory.db`, so
 relocating this project (as it was, from `web-service-archive/` to `web-service/`)

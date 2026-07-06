@@ -182,6 +182,42 @@ class HarnessStatusUpdate(BaseModel):
     error: str | None = None
 
 
+class EventAggregate(BaseModel):
+    type: str
+    id: str
+
+
+class EventEnvelope(BaseModel):
+    """Stable outbound event envelope (event subscription layer). The webhook
+    body is exactly this shape; ``payload`` carries the event-type-specific data."""
+    event_id: str
+    event_type: str
+    occurred_at: str
+    source: str = C.EVENT_SOURCE
+    version: str = C.EVENT_ENVELOPE_VERSION
+    aggregate: EventAggregate
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class OutboxEvent(BaseModel):
+    """One durable (event × subscription) delivery record from event_outbox."""
+    id: str                    # delivery id (dlv_...)
+    event_id: str
+    event_type: str
+    aggregate_type: str
+    aggregate_id: str
+    subscription_id: str
+    payload: dict[str, Any]    # the full envelope
+    status: str = C.OUTBOX_STATUS_PENDING
+    attempts: int = 0
+    max_attempts: int = 8
+    next_attempt_at: str
+    last_error: str | None = None
+    http_status: int | None = None
+    created_at: str
+    updated_at: str
+
+
 class DocumentIngestRequest(BaseModel):
     user_id: str | None = None
     project_id: str | None = None

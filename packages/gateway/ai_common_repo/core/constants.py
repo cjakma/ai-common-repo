@@ -82,6 +82,37 @@ HARNESS_STATUS_TRANSITIONS = {
                              HARNESS_STATUS_CANCELLED),
 }
 
+# event bus / webhook outbox (event subscription layer). The gateway publishes
+# domain events into a durable outbox and an async worker fans them out to
+# configured generic HTTP webhook subscriptions — core stays platform-agnostic
+# (no Slack/Discord/Hermes coupling).
+EVENT_SOURCE = "ai-common-repo"
+EVENT_ENVELOPE_VERSION = "1"
+EVENT_HARNESS_TASK_STATUS_CHANGED = "harness.task.status_changed"
+EVENT_WEBHOOK_TEST = "webhook.test"
+EVENT_AGGREGATE_HARNESS_TASK = "harness_task"
+
+# harness statuses that are terminal (easy subscription filtering / notify-once).
+HARNESS_TERMINAL_STATUSES = ("done", "failed", "cancelled")
+
+# event_outbox.status — one row per (event × subscription); delivery is
+# at-least-once with bounded retry, then dead-letter.
+OUTBOX_STATUS_PENDING = "pending"
+OUTBOX_STATUS_DELIVERING = "delivering"
+OUTBOX_STATUS_DELIVERED = "delivered"
+OUTBOX_STATUS_FAILED = "failed"
+OUTBOX_STATUS_DEAD_LETTER = "dead_letter"
+OUTBOX_STATUSES = (OUTBOX_STATUS_PENDING, OUTBOX_STATUS_DELIVERING,
+                   OUTBOX_STATUS_DELIVERED, OUTBOX_STATUS_FAILED,
+                   OUTBOX_STATUS_DEAD_LETTER)
+
+# Webhook signature / delivery headers (see events.signing).
+HDR_EVENT_ID = "X-AICR-Event-ID"
+HDR_EVENT_TYPE = "X-AICR-Event-Type"
+HDR_DELIVERY_ID = "X-AICR-Delivery-ID"
+HDR_TIMESTAMP = "X-AICR-Timestamp"
+HDR_SIGNATURE = "X-AICR-Signature"
+
 # embeddings.object_type — what a stored vector points back to.
 OBJECT_TYPE_MEMORY = "memory"
 OBJECT_TYPE_CHUNK = "document_chunk"

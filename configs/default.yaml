@@ -115,6 +115,40 @@ harness:
   stale_multiplier: 2      # claim older than N x timeout_s counts as stale
   max_requeues: 1          # stale tasks return to pending at most this often
 
+# Event subscription / webhook layer. Off by default. When enabled, harness task
+# status changes are published into a durable outbox and an async worker delivers
+# them to the generic HTTP subscriptions below (HMAC-signed when secret_env is
+# set). ai-common-repo core stays platform-agnostic — no Slack/Discord/Hermes
+# code here, just signed POSTs. Secrets are read from env at send time, never
+# stored/logged. See README "Event subscription / webhooks".
+notifications:
+  enabled: false
+  publish_enabled: true          # publish events into the outbox (independent of delivery)
+  outbox_poll_interval_s: 5
+  default_timeout_s: 5
+  default_max_attempts: 8
+  backoff_base_s: 2.0
+  backoff_max_s: 300.0
+  jitter_ratio: 0.2
+  # SSRF guard: only loopback/private webhook hosts allowed unless set true.
+  allow_external_urls: false
+  subscriptions: []
+  # Example (leave commented until a receiver exists):
+  # subscriptions:
+  #   - id: hermes-origin-harness-terminal
+  #     name: Hermes harness terminal task notifier
+  #     enabled: true
+  #     type: http
+  #     url: http://127.0.0.1:8099/internal/events/harness
+  #     secret_env: AI_COMMON_REPO_WEBHOOK_SECRET   # env var NAME, not the secret
+  #     event_types: [harness.task.status_changed]
+  #     filters:
+  #       executor: [claudecode, openclaw, opencode]
+  #       new_status: [done, failed, cancelled]
+  #       requester: [hermes]
+  #     headers:
+  #       X-AICR-Source: ai-common-repo
+
 adapters:
   codex:
     enabled: true

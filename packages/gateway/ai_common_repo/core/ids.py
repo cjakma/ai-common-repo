@@ -31,3 +31,12 @@ def prefixed(prefix: str) -> str:
 
 def now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def shift_iso(iso_ts: str, seconds: float) -> str:
+    """Add ``seconds`` to an ISO ``YYYY-MM-DDTHH:MM:SSZ`` timestamp (>=0 only)."""
+    if seconds <= 0:
+        return iso_ts
+    import calendar
+    epoch = calendar.timegm(time.strptime(iso_ts, "%Y-%m-%dT%H:%M:%SZ")) + seconds
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))

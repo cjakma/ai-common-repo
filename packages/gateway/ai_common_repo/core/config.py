@@ -171,6 +171,47 @@ class HarnessConfig(BaseModel):
     max_requeues: int = 1
 
 
+class WebhookSubscriptionConfig(BaseModel):
+    """A single generic HTTP webhook subscription (config-driven). No platform
+    (Slack/Discord/Hermes) specifics live here — just a URL, filters and an env
+    var name for the signing secret. The secret VALUE is never stored in config;
+    only ``secret_env`` (the variable name) is, and it is read at delivery time."""
+    id: str
+    name: str = ""
+    enabled: bool = True
+    type: str = "http"
+    url: str
+    # Name of the env var holding the HMAC secret. Unset => requests unsigned.
+    secret_env: str | None = None
+    event_types: list[str] = Field(default_factory=list)  # empty => all types
+    filters: dict[str, Any] = Field(default_factory=dict)
+    headers: dict[str, str] = Field(default_factory=dict)
+    # None => inherit NotificationsConfig.default_timeout_s.
+    timeout_s: float | None = None
+    max_attempts: int | None = None
+    backoff_base_s: float | None = None
+    backoff_max_s: float | None = None
+
+
+class NotificationsConfig(BaseModel):
+    # Off by default: publishing + delivery only happen when explicitly enabled.
+    # Even disabled, the outbox tables exist so nothing breaks if turned on later.
+    enabled: bool = False
+    # Whether update_status() enqueues events at all. Independent of the delivery
+    # worker so an operator can capture events without sending them yet.
+    publish_enabled: bool = True
+    outbox_poll_interval_s: float = 5.0
+    default_timeout_s: float = 5.0
+    default_max_attempts: int = 8
+    backoff_base_s: float = 2.0
+    backoff_max_s: float = 300.0
+    jitter_ratio: float = 0.2
+    # SSRF guard: by default only loopback/private webhook hosts are allowed.
+    # Set true (with care) to permit public URLs.
+    allow_external_urls: bool = False
+    subscriptions: list[WebhookSubscriptionConfig] = Field(default_factory=list)
+
+
 class PrivacyConfig(BaseModel):
     mode: str = "local-first"
     redact_secrets: bool = True
@@ -193,6 +234,7 @@ class AppConfig(BaseModel):
     workers: WorkersConfig = Field(default_factory=WorkersConfig)
     connectors: ConnectorsConfig = Field(default_factory=ConnectorsConfig)
     harness: HarnessConfig = Field(default_factory=HarnessConfig)
+    notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
     adapters: dict[str, Any] = Field(default_factory=dict)
 
