@@ -17,7 +17,7 @@ from typing import Any
 
 from ..core import constants as C
 from ..core.ids import now_iso, prefixed
-from ..storage.database import Database
+from ..storage.database import Database, database_locked_methods
 
 
 @dataclass
@@ -78,6 +78,7 @@ class JobQueue(ABC):
     def counts(self) -> dict[str, int]: ...
 
 
+@database_locked_methods
 class SqliteJobQueue(JobQueue):
     def __init__(self, db: Database, *, default_max_attempts: int = 3,
                  backoff_base_s: float = 1.0, backoff_max_s: float = 300.0):

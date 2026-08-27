@@ -9,7 +9,7 @@ from typing import Any
 from ..core import constants as C
 from ..core.ids import now_iso, prefixed
 from ..core.models import HarnessTask, Memory, OutboxEvent, Profile
-from .database import Database
+from .database import Database, database_locked_methods
 
 
 def _row_to_memory(row: Any) -> Memory:
@@ -33,6 +33,7 @@ def _row_to_memory(row: Any) -> Memory:
     )
 
 
+@database_locked_methods
 class MemoryRepository:
     def __init__(self, db: Database):
         self._db = db
@@ -128,6 +129,7 @@ class MemoryRepository:
         return out
 
 
+@database_locked_methods
 class ProfileRepository:
     def __init__(self, db: Database):
         self._db = db
@@ -163,6 +165,7 @@ class ProfileRepository:
         c.commit()
 
 
+@database_locked_methods
 class SessionRepository:
     def __init__(self, db: Database):
         self._db = db
@@ -193,6 +196,7 @@ class SessionRepository:
         return dict(row) if row else None
 
 
+@database_locked_methods
 class AuditRepository:
     def __init__(self, db: Database):
         self._db = db
@@ -209,6 +213,7 @@ class AuditRepository:
         c.commit()
 
 
+@database_locked_methods
 class EmbeddingRepository:
     """Persistence for vectors. Stores math-free: similarity lives in the search
     layer (BruteForceVectorIndex) or, when available, in SQL via ``vec_search``.
@@ -306,6 +311,7 @@ _CHUNK_FTS_SELECT = f"""
 """
 
 
+@database_locked_methods
 class DocumentRepository:
     """Documents + their chunks. Chunk content is mirrored into an FTS table so
     document retrieval works the same way memory retrieval does."""
@@ -430,6 +436,7 @@ def _row_to_task(row: Any) -> HarnessTask:
     )
 
 
+@database_locked_methods
 class HarnessTaskRepository:
     """Contract-inbox queue rows. Claiming is a single guarded UPDATE...RETURNING
     so two concurrent runners can never take the same task."""
@@ -549,6 +556,7 @@ def _row_to_outbox(row: Any) -> OutboxEvent:
     )
 
 
+@database_locked_methods
 class EventOutboxRepository:
     """Durable event-delivery outbox. One row per (event × subscription); the
     delivery worker claims due rows (pending->delivering), sends them, and marks
@@ -679,6 +687,7 @@ class EventOutboxRepository:
         return out
 
 
+@database_locked_methods
 class ConnectorStateRepository:
     """Incremental polling cursors. Each connector stores an opaque cursor string
     per resource (default a single 'default' slot); only the connector interprets
