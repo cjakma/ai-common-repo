@@ -10,7 +10,7 @@ import tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "packages", "gateway"))
 
 from ai_common_repo.core import constants as C  # noqa: E402
-from ai_common_repo.core.config import load_config  # noqa: E402
+from ai_common_repo.core.config import StorageConfig, load_config  # noqa: E402
 from ai_common_repo.core.models import (  # noqa: E402
     DocumentIngestRequest, RecallRequest, SearchRequest, StoreMemoryRequest,
 )
@@ -77,7 +77,8 @@ def test_brute_force_index_ranks_by_cosine():
 
 def test_build_vector_index_falls_back_to_bruteforce():
     repo = EmbeddingRepository(Database(os.path.join(tempfile.mkdtemp(), "m.db")))
-    idx = build_vector_index(C.VECTOR_BACKEND_AUTO, repo)
+    storage = StorageConfig(vector_backend=C.VECTOR_BACKEND_AUTO)
+    idx = build_vector_index(storage, repo, dim=128)
     assert isinstance(idx, BruteForceVectorIndex)  # sqlite-vec not installed here
 
 
@@ -198,10 +199,12 @@ def test_async_embed_indexes_via_worker():
         content="The cache backend is memcached.", type="project_fact",
         scope="project", project_id="repo:ae"))
     assert mem is not None
-    assert svc.embeddings.count() == 0  # nothing embedded inline yet
+    # Vector indexing is deferred to the worker — nothing retrievable yet.
+    pre = svc.search(SearchRequest(q="memcached", project_id="repo:ae",
+                                   search_mode="vector"))
+    assert not pre
 
     Worker(svc.jobs, svc.handlers).drain()
-    assert svc.embeddings.count() >= 1
 
     hits = svc.search(SearchRequest(q="memcached", project_id="repo:ae",
                                     search_mode="vector"))

@@ -1,5 +1,11 @@
 # ai-common-repo
 
+<!-- version-sync -->
+> **버전** `0.1.0` · **GitHub** [cjakma/ai-common-repo](https://github.com/cjakma/ai-common-repo) `master` · **API 명세** [docs/API.md](docs/API.md) · **운영** [docs/OPERATIONS.md](docs/OPERATIONS.md)
+>
+> README 확인일 2026-10-15 · 2026-10-15 샌드박스(ai-common-repo-2nd, Phase 6–9) 병합·재배포 — 벡터 스토어 = 내장 Qdrant(활성 메모리 11,424건 = Qdrant 포인트 11,424개), 테스트 117 passed / 1 skipped, ruff clean
+<!-- /version-sync -->
+
 Local-first **shared long-term memory / context gateway** for AI coding agents
 (Codex, ClaudeCode, Antigravity-CLI) with vLLM/Ollama as model backends.
 
@@ -10,7 +16,7 @@ It adopts Supermemory's *concept* — an AI-facing durable memory layer — but 
 clean-room reimplementation: modular packages, dependency-injected services,
 config-driven (no hardcoded tunables), and degrades gracefully offline.
 
-> Design doc: `/home/ubuntu/ai-common-repo_architect.md` · this repo implements
+> Design doc: `docs/ai-common-repo_architect.md` (moved here from `~/` on 2026-09-04) · this repo implements
 > local SQLite memory + the model-backend abstraction, an async worker/scheduler,
 > vector/hybrid search + RAG documents, an MCP server, and polling connectors.
 
@@ -23,7 +29,7 @@ config-driven (no hardcoded tunables), and degrades gracefully offline.
 packages/
   gateway/ai_common_repo/   # the domain: storage, extraction, resolver, profiles,
                             # search (fts/vector/hybrid), model_backends, workers,
-                            # connectors, mcp, server, api
+                            # connectors, mcp, observability, server, api
   cli/ai_common_repo_cli/   # `ai-common-repo` CLI (talks to the local service)
   adapters/                 # codex-memory / claudecode-memory / antigravity-memory
 configs/default.yaml        # every tunable lives here (override via ~/.config or AICR_*)
@@ -49,7 +55,14 @@ Architecture invariants:
 
 ## Install & run
 
-This deployment runs from a project venv via `-m` (no global install required):
+**Production** runs as the `ai-common-repo` service in `/home/ubuntu/docker-compose.yml`
+(one image = gateway + bundled Qdrant, data on `~/.local/share/ai-common-repo` → `/data`).
+Deploy/redeploy with `scripts/deploy.sh` — it tags the running image as
+`ai-common-repo:rollback`, rebuilds from this checkout and health-checks `:28787`.
+After moving from a non-Qdrant vector backend, run `scripts/backfill_qdrant.py` once
+inside the container (`sudo docker exec -i -w /app ai-common-repo python - < scripts/backfill_qdrant.py`).
+
+For local development the CLI runs from a project venv via `-m` (no global install required):
 
 ```bash
 cd /home/ubuntu/web-service/ai-common-repo
@@ -186,19 +199,32 @@ Built on top of that (test-covered, degrade-gracefully offline):
   worker with retry/backoff and idempotency, interval scheduler. Extraction,
   profile rebuild, auto-forget (expiry/decay), and connector polling run as jobs.
 - **Vector / hybrid search + RAG documents** (`search/`, `/v1/documents`):
-  FTS + vector results fused with RRF; deterministic hash-embedding fallback so
-  vector search works with no embedding backend. Documents are chunked, embedded,
-  and returned alongside memories with source attribution.
+  FTS + vector results fused with RRF, then query expansion + feature rerank.
+  The vector store is **Qdrant** (`storage.vector_backend: qdrant`; the image sets
+  `AICR_STORAGE__QDRANT_URL=http://127.0.0.1:6333` for the bundled server — with no
+  URL the client is in-memory, which is for tests only). Brute-force / sqlite-vec
+  remain as offline fallbacks. No embedding model is configured, so vectors are the
+  deterministic 256-dim hash embedding. Documents are chunked, embedded, and
+  returned alongside memories with source attribution. FTS queries quote every
+  term, so words like `AND` / `OR` / `NOT` / `NEAR` are matched as text.
 - **MCP server** (`mcp/`, `POST /mcp`): spec-compliant JSON-RPC over
-  Streamable-HTTP exposing 6 tools (`memory_store / memory_search / memory_recall
-  / memory_profile / memory_forget / session_ingest`) mapped 1:1 to the service.
+  Streamable-HTTP exposing 8 tools (`memory_store / memory_search / memory_recall
+  / memory_profile / memory_forget / session_ingest` mapped 1:1 to the service, plus
+  `harness_request / harness_result` over the `/v1/harness/tasks` queue — live-checked 2026-09-24).
   Ready-to-apply host setups live in `integrations/`.
 - **Polling connectors** (`connectors/`, default **off**): GitHub / Notion poll
   into the RAG document pipeline. Tokens are read from env at sync time only and
   never persisted; outbound HTTP is https + host-allow-list + timeout bounded.
-- **Event subscription / webhooks** (`events/`, default **off**): durable event
+- **Event subscription / webhooks** (`events/`, default **off**; enabled in this
+  deployment via `/data/config.yaml` for the Hermes harness notifier): durable event
   outbox + async HMAC-signed HTTP delivery with retry/backoff and dead-lettering,
   publishing harness task status changes. See "Event subscription / webhooks".
+- **Observability** (`observability/`, read-only): `/v1/health` (liveness +
+  readiness), `/v1/metrics` (job depth/throughput/failure-rate + search latency,
+  JSON or Prometheus), `/v1/jobs` and `/v1/connectors` (queue backlog, recent
+  failures, sync watermarks). Structured JSON logging correlates request-id /
+  job-id; every surface and log line is redacted (hints, not values). See
+  `docs/OPERATIONS.md`.
 
 Storage lives outside the repo at `~/.local/share/ai-common-repo/memory.db`, so
 relocating this project (as it was, from `web-service-archive/` to `web-service/`)

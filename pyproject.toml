@@ -16,6 +16,9 @@ dependencies = [
     "pydantic>=2.6",
     "PyYAML>=6.0",
     "httpx>=0.27",
+    # RAG vector store (operator directive: Qdrant is the canonical backend).
+    # Offline tests use the same client via QdrantClient(location=":memory:").
+    "qdrant-client>=1.12",
 ]
 
 [project.optional-dependencies]

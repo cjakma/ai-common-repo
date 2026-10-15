@@ -73,6 +73,15 @@ class MemoryRepository:
         ).fetchall()
         return [_row_to_memory(r) for r in rows]
 
+    def active_all(self, limit: int = 5000) -> list[Memory]:
+        """All active memories (across users/projects). Used by the consolidation
+        job, which groups them by visibility scope before comparing."""
+        rows = self._db.conn.execute(
+            "SELECT * FROM memories WHERE status=? ORDER BY updated_at DESC LIMIT ?",
+            (C.MEMORY_STATUS_ACTIVE, limit),
+        ).fetchall()
+        return [_row_to_memory(r) for r in rows]
+
     def expire_due(self, now: str, confidence_floor: float = 0.0) -> list[str]:
         """Mark active memories as expired when past valid_until, or (when
         confidence_floor > 0) when their confidence has decayed below it.
@@ -703,6 +712,14 @@ class ConnectorStateRepository:
         ).fetchone()
         return row["cursor"] if row else None
 
+    def all(self) -> list[dict[str, Any]]:
+        """Every stored cursor row (connector, resource, cursor, updated_at).
+        Used by the read-only ops status view to surface sync watermarks."""
+        rows = self._db.conn.execute(
+            "SELECT connector, resource, cursor, updated_at FROM connector_state "
+            "ORDER BY connector, resource").fetchall()
+        return [dict(r) for r in rows]
+
     def set(self, connector: str, cursor: str | None,
             resource: str = "default") -> None:
         c = self._db.conn
@@ -725,6 +742,7 @@ def _unpack_vector(blob: bytes) -> list[float]:
 
 
 def _fts_query(raw: str) -> str:
-    # Sanitize user text into a safe FTS5 OR query of bare terms.
+    # Sanitize user text into a safe FTS5 OR query. Each term is quoted so that
+    # words such as AND/OR/NOT/NEAR are matched as text, not parsed as operators.
     terms = [t for t in "".join(ch if ch.isalnum() else " " for ch in raw).split() if t]
-    return " OR ".join(terms) if terms else '""'
+    return " OR ".join(f'"{t}"' for t in terms) if terms else '""'

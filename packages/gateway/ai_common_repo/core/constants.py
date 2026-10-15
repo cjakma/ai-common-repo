@@ -54,6 +54,7 @@ JOB_REBUILD_PROFILE = "rebuild_profile"
 JOB_FORGET_EXPIRED = "forget_expired"
 JOB_EMBED = "embed"
 JOB_CONNECTOR_POLL = "connector_poll"
+JOB_DEDUP_MEMORIES = "dedup_memories"
 
 # connector names (registry keys / connector_state.connector)
 CONNECTOR_GITHUB = "github"
@@ -123,6 +124,7 @@ SEARCH_MODE_VECTOR = "vector"
 SEARCH_MODE_HYBRID = "hybrid"
 
 # vector index backend selection (storage.vector_backend)
+VECTOR_BACKEND_QDRANT = "qdrant"        # canonical backend (operator directive)
 VECTOR_BACKEND_AUTO = "auto"            # sqlite-vec if importable, else bruteforce
 VECTOR_BACKEND_BRUTEFORCE = "bruteforce"
 VECTOR_BACKEND_SQLITE_VEC = "sqlite-vec"

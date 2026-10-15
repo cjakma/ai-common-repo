@@ -11,6 +11,7 @@ import logging
 import threading
 from typing import Callable
 
+from ..observability.logging import job_context
 from .queue import JobQueue
 
 Handler = Callable[[dict], None]
@@ -29,6 +30,9 @@ class Worker:
     def register(self, name: str, handler: Handler) -> None:
         self._handlers[name] = handler
 
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
     # -- single-step (used by tests and the loop) ----------------------------
     def run_once(self) -> bool:
         """Claim and execute at most one job. Returns True if work was done."""
@@ -40,13 +44,15 @@ class Worker:
             self._queue.fail(job.id, f"no handler registered for {job.handler!r}")
             self._log.warning("dropping job %s: unknown handler %s", job.id, job.handler)
             return True
-        try:
-            handler(job.payload)
-        except Exception as exc:  # noqa: BLE001 - isolate handler failures
-            self._queue.fail(job.id, repr(exc))
-            self._log.warning("job %s (%s) failed: %r", job.id, job.handler, exc)
-        else:
-            self._queue.complete(job.id)
+        # Bind the job-id so every line a handler logs is correlated to it.
+        with job_context(job.id):
+            try:
+                handler(job.payload)
+            except Exception as exc:  # noqa: BLE001 - isolate handler failures
+                self._queue.fail(job.id, repr(exc))
+                self._log.warning("job %s (%s) failed: %r", job.id, job.handler, exc)
+            else:
+                self._queue.complete(job.id)
         return True
 
     def drain(self, max_jobs: int = 1000) -> int:

@@ -14,6 +14,8 @@ from ..core import constants as C
 from ..core.models import Memory, SearchHit, SearchRequest
 from ..model_backends.base import EmbeddingBackend
 from ..storage.repositories import DocumentRepository, MemoryRepository
+from .expansion import QueryExpander
+from .rerank import Reranker
 from .vector import VectorIndex
 
 # Over-fetch before scope filtering so post-filter results still fill the limit.
@@ -24,13 +26,17 @@ _MIN_CANDIDATES = 50
 class SearchService:
     def __init__(self, memories: MemoryRepository, documents: DocumentRepository,
                  vector_index: VectorIndex, embedder: EmbeddingBackend, *,
-                 rrf_k: int = 60, include_documents: bool = True):
+                 rrf_k: int = 60, include_documents: bool = True,
+                 reranker: Reranker | None = None,
+                 expander: QueryExpander | None = None):
         self._memories = memories
         self._documents = documents
         self._index = vector_index
         self._embedder = embedder
         self._rrf_k = rrf_k
         self._include_documents = include_documents
+        self._reranker = reranker
+        self._expander = expander
 
     def search(self, req: SearchRequest, default_user: str) -> list[SearchHit]:
         user_id = req.user_id or default_user
@@ -38,34 +44,41 @@ class SearchService:
                         else req.include_documents)
         if req.tags:
             include_docs = False  # chunks carry no tags — memory-only addressing
+        # Expand the retrieval query (decomposed identifiers + synonyms) while
+        # keeping the original for reranking's exact-match features.
+        q = self._expander.expand(req.q) if self._expander else req.q
         if req.search_mode == C.SEARCH_MODE_VECTOR:
-            hits = self._vector(req, user_id, include_docs)
+            hits = self._vector(req, q, user_id, include_docs)
         elif req.search_mode == C.SEARCH_MODE_HYBRID:
-            hits = self._hybrid(req, user_id, include_docs)
+            hits = self._hybrid(req, q, user_id, include_docs)
+            if self._reranker is not None:
+                # Rerank against the expanded query so coverage credits the
+                # decomposed identifier parts / synonyms too.
+                hits = self._reranker.rerank(q, hits)
         else:
-            hits = self._fts(req, user_id, include_docs)
+            hits = self._fts(req, q, user_id, include_docs)
         if req.scope:
             hits = [h for h in hits
                     if h.object_type != C.OBJECT_TYPE_MEMORY or h.scope in req.scope]
         return hits[:req.limit]
 
     # -- fts -----------------------------------------------------------------
-    def _fts(self, req: SearchRequest, user_id: str,
+    def _fts(self, req: SearchRequest, q: str, user_id: str,
              include_docs: bool) -> list[SearchHit]:
         hits = [_mem_hit(m, s) for m, s in
-                self._memories.search_fts(req.q, user_id, req.project_id, req.limit,
+                self._memories.search_fts(q, user_id, req.project_id, req.limit,
                                           tags=req.tags)]
         if include_docs:
             hits += [_chunk_hit(c, s) for c, s in
                      self._documents.search_chunks_fts(
-                         req.q, user_id, req.project_id, req.limit)]
+                         q, user_id, req.project_id, req.limit)]
         hits.sort(key=lambda h: h.score, reverse=True)
         return hits
 
     # -- vector --------------------------------------------------------------
-    def _vector(self, req: SearchRequest, user_id: str,
+    def _vector(self, req: SearchRequest, q: str, user_id: str,
                 include_docs: bool) -> list[SearchHit]:
-        qvec = self._embedder.embed([req.q])[0]
+        qvec = self._embedder.embed([q])[0]
         object_types = [C.OBJECT_TYPE_MEMORY]
         if include_docs:
             object_types.append(C.OBJECT_TYPE_CHUNK)
@@ -91,10 +104,10 @@ class SearchService:
         return hits
 
     # -- hybrid (RRF) --------------------------------------------------------
-    def _hybrid(self, req: SearchRequest, user_id: str,
+    def _hybrid(self, req: SearchRequest, q: str, user_id: str,
                 include_docs: bool) -> list[SearchHit]:
-        rankings = [self._fts(req, user_id, include_docs),
-                    self._vector(req, user_id, include_docs)]
+        rankings = [self._fts(req, q, user_id, include_docs),
+                    self._vector(req, q, user_id, include_docs)]
         fused: dict[tuple[str, str], SearchHit] = {}
         scores: dict[tuple[str, str], float] = {}
         for ranking in rankings:

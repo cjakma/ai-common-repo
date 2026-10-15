@@ -28,6 +28,9 @@ def build_runtime(service: _Runnable, cfg: AppConfig) -> tuple[Worker, Scheduler
     if cfg.memory.forget_enabled:
         scheduler.every(cfg.memory.forget_interval_s, C.JOB_FORGET_EXPIRED,
                         name="forget_expired")
+    if cfg.memory.dedup_enabled:
+        scheduler.every(cfg.memory.dedup_interval_s, C.JOB_DEDUP_MEMORIES,
+                        name="dedup_memories")
     for name, sub in (("github", cfg.connectors.github),
                       ("notion", cfg.connectors.notion)):
         if sub.enabled:

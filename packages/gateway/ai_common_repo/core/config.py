@@ -31,8 +31,17 @@ class ServerConfig(BaseModel):
 class StorageConfig(BaseModel):
     db_path: str = "~/.local/share/ai-common-repo/memory.db"
     raw_log_dir: str = "~/.local/share/ai-common-repo/sessions"
-    # auto | bruteforce | sqlite-vec (see constants.VECTOR_BACKEND_*).
-    vector_backend: str = "auto"
+    # qdrant (canonical) | auto | bruteforce | sqlite-vec (constants.VECTOR_BACKEND_*).
+    # bruteforce/sqlite-vec are offline-test fallbacks only.
+    vector_backend: str = "qdrant"
+    # Qdrant connection. When backend == qdrant and neither url nor location is
+    # set, an in-memory client (":memory:") is used — the same code path tests
+    # and offline runs exercise without a server. Production sets qdrant_url.
+    qdrant_url: str | None = None              # e.g. http://127.0.0.1:6333
+    qdrant_location: str | None = None         # e.g. ":memory:" (offline)
+    qdrant_collection: str = "ai_common_repo"
+    qdrant_prefer_grpc: bool = False
+    qdrant_timeout_s: float = 10.0
 
     @property
     def db_file(self) -> Path:
@@ -75,6 +84,27 @@ class EmbeddingConfig(BaseModel):
     rrf_k: int = 60
 
 
+class RerankConfig(BaseModel):
+    # Second-pass reranking of fused (hybrid) candidates. On by default using the
+    # deterministic feature scorer; the optional external cross-encoder stays off
+    # unless a compatible backend is wired (keeps offline/tests model-free).
+    enabled: bool = True
+    use_cross_encoder: bool = False
+    pool: int = 50  # rescore at most the top-N fused candidates
+
+
+class QueryExpansionConfig(BaseModel):
+    # Deterministic recall booster: decompose identifiers + conservative synonyms.
+    enabled: bool = True
+    max_terms: int = 32
+    use_synonyms: bool = True
+
+
+class SearchConfig(BaseModel):
+    rerank: RerankConfig = Field(default_factory=RerankConfig)
+    query_expansion: QueryExpansionConfig = Field(default_factory=QueryExpansionConfig)
+
+
 class DocumentsConfig(BaseModel):
     # Ingest guards: reject oversized / over-chunked documents up front.
     max_content_chars: int = 500_000
@@ -105,6 +135,12 @@ class MemoryConfig(BaseModel):
     forget_interval_s: int = 3600
     # Include document chunks (not just memories) in recall/search fusion.
     include_documents: bool = True
+    # Near-duplicate consolidation (periodic job). Off by default (conservative);
+    # when on, active memories whose embeddings are >= dedup_similarity are merged
+    # under the highest-confidence / most-recent one (losers -> superseded).
+    dedup_enabled: bool = False
+    dedup_similarity: float = 0.95
+    dedup_interval_s: int = 86_400
 
 
 class WorkersConfig(BaseModel):
@@ -212,6 +248,15 @@ class NotificationsConfig(BaseModel):
     subscriptions: list[WebhookSubscriptionConfig] = Field(default_factory=list)
 
 
+class ObservabilityConfig(BaseModel):
+    # Structured logging + ops endpoints. Logs are JSON by default with
+    # request-id/job-id correlation; every record is redacted before emit.
+    log_level: str = "INFO"
+    log_format: str = "json"          # json | text
+    # Cap on recent_failures returned by the read-only job status endpoint.
+    recent_failures_limit: int = 20
+
+
 class PrivacyConfig(BaseModel):
     mode: str = "local-first"
     redact_secrets: bool = True
@@ -230,11 +275,13 @@ class AppConfig(BaseModel):
     models: ModelsConfig = Field(default_factory=ModelsConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
+    search: SearchConfig = Field(default_factory=SearchConfig)
     documents: DocumentsConfig = Field(default_factory=DocumentsConfig)
     workers: WorkersConfig = Field(default_factory=WorkersConfig)
     connectors: ConnectorsConfig = Field(default_factory=ConnectorsConfig)
     harness: HarnessConfig = Field(default_factory=HarnessConfig)
     notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
+    observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
     adapters: dict[str, Any] = Field(default_factory=dict)
 

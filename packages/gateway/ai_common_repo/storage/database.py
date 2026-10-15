@@ -68,6 +68,14 @@ class Database:
             )
             c.commit()
 
+    def ping(self) -> bool:
+        """Cheap readiness probe: confirm the connection answers a trivial query."""
+        try:
+            self._conn.execute("SELECT 1").fetchone()
+            return True
+        except sqlite3.Error:
+            return False
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()

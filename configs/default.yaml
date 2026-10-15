@@ -10,8 +10,14 @@ storage:
   # ~ and env vars are expanded by the loader.
   db_path: ~/.local/share/ai-common-repo/memory.db
   raw_log_dir: ~/.local/share/ai-common-repo/sessions
-  # auto => sqlite-vec when importable, else pure-python brute force.
-  vector_backend: auto        # auto | bruteforce | sqlite-vec
+  # Canonical vector store is Qdrant (operator directive). bruteforce/sqlite-vec
+  # remain offline-test fallbacks only.
+  vector_backend: qdrant      # qdrant | auto | bruteforce | sqlite-vec
+  # Qdrant connection. Leave qdrant_url unset to use an in-memory client
+  # (offline / tests). Deployment sets the server url, e.g.:
+  #   qdrant_url: http://127.0.0.1:6333
+  qdrant_url: null
+  qdrant_collection: ai_common_repo
 
 identity:
   default_user_id: painmaster
@@ -56,11 +62,28 @@ memory:
   forget_interval_s: 3600
   # Fuse document chunks (not just memories) into recall/search results.
   include_documents: true
+  # Near-duplicate consolidation job (conservative; off by default).
+  dedup_enabled: false
+  dedup_similarity: 0.95         # cosine >= this => treated as duplicates
+  dedup_interval_s: 86400
 
 # Embedding / hybrid-search tuning.
 embedding:
   dim: 256        # offline hash-embedding width (ignored by real model backends)
   rrf_k: 60       # reciprocal-rank-fusion constant for hybrid search
+
+# Search-quality stages (Phase 8). All deterministic/offline by default.
+search:
+  # Second-pass reranking of fused hybrid candidates.
+  rerank:
+    enabled: true
+    use_cross_encoder: false   # optional external; off => feature scorer (no model)
+    pool: 50                   # rescore at most the top-N fused candidates
+  # Deterministic query expansion (identifier decomposition + dev synonyms).
+  query_expansion:
+    enabled: true
+    max_terms: 32
+    use_synonyms: true
 
 # RAG document ingest guards.
 documents:
@@ -148,6 +171,14 @@ notifications:
   #       requester: [hermes]
   #     headers:
   #       X-AICR-Source: ai-common-repo
+
+# Observability (Phase 9): structured logging + read-only ops endpoints
+# (/v1/health, /v1/metrics, /v1/jobs, /v1/connectors). Logs are redacted JSON
+# with request-id/job-id correlation; the endpoints expose hints, never secrets.
+observability:
+  log_level: INFO
+  log_format: json               # json | text
+  recent_failures_limit: 20
 
 adapters:
   codex:

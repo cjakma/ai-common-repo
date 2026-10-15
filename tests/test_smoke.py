@@ -57,3 +57,17 @@ def test_store_recall_search_profile_ingest():
 
 if __name__ == "__main__":
     test_store_recall_search_profile_ingest()
+
+
+def test_fts_operator_words_are_plain_terms():
+    # Regression: uppercase AND/OR/NOT/NEAR in a query used to reach FTS5 as
+    # operators and fail with "fts5: syntax error" (500 on /v1/recall).
+    svc = _service()
+    svc.store_memory(StoreMemoryRequest(
+        content="Deploy is NOT allowed on Fridays.",
+        type="constraint", scope="project", project_id="repo:fts"))
+    for q in ["deploy NOT working", "use AND or", "NEAR the gateway", "NOT", "OR"]:
+        svc.search(SearchRequest(q=q, project_id="repo:fts"))
+        svc.recall(RecallRequest(query=q, project_id="repo:fts"))
+    hits = svc.search(SearchRequest(q="NOT allowed", project_id="repo:fts"))
+    assert any("Fridays" in h["content"] for h in hits)

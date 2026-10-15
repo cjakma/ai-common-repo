@@ -23,9 +23,19 @@ from .extraction.chunker import chunk_text
 from .extraction.pipeline import ExtractionPipeline
 from .harness import HarnessQueueService
 from .model_backends.registry import BackendRegistry
+from .observability import (
+    MetricsCollector, build_connector_status, build_health, build_job_status,
+    build_metrics,
+)
+from .observability.models import (
+    ConnectorStatusResponse, HealthResponse, JobStatusResponse, MetricsResponse,
+)
 from .privacy.redactor import Redactor
 from .profiles.builder import ProfileBuilder
 from .resolver.conflict import ConflictResolver
+from .resolver.dedup import cluster_by_cosine
+from .search.expansion import build_expander
+from .search.rerank import build_reranker
 from .search.service import SearchService
 from .search.vector import build_vector_index
 from .storage.database import Database
@@ -63,11 +73,15 @@ class MemoryService:
         self.profile_builder = ProfileBuilder(cfg.memory)
         self.embedder = self.backends.embedder(cfg.embedding.dim)
         self.vector_index = build_vector_index(
-            cfg.storage.vector_backend, self.embeddings)
+            cfg.storage, self.embeddings, dim=cfg.embedding.dim)
+        self.reranker = build_reranker(
+            cfg.search.rerank, self.backends.for_task(C.TASK_RERANKING))
+        self.expander = build_expander(cfg.search.query_expansion)
         self.search_svc = SearchService(
             self.memories, self.documents, self.vector_index, self.embedder,
             rrf_k=cfg.embedding.rrf_k,
-            include_documents=cfg.memory.include_documents)
+            include_documents=cfg.memory.include_documents,
+            reranker=self.reranker, expander=self.expander)
         self.context_builder = ContextBuilder(cfg.memory)
         self.connectors = build_connectors(cfg.connectors)
         # Event subscription / webhook layer. The outbox tables always exist; the
@@ -79,6 +93,7 @@ class MemoryService:
         self.harness = HarnessQueueService(
             HarnessTaskRepository(self._db), self.audit, cfg.harness,
             events=self.events)
+        self.metrics = MetricsCollector()
 
     # -- identity helpers ----------------------------------------------------
     def _user(self, user_id: str | None) -> str:
@@ -96,6 +111,7 @@ class MemoryService:
 
     def forget(self, memory_id: str) -> None:
         self.memories.set_status(memory_id, C.MEMORY_STATUS_FORGOTTEN)
+        self.vector_index.delete(C.OBJECT_TYPE_MEMORY, memory_id)
         self.audit.log("forget", "memory", memory_id)
 
     # -- ingest --------------------------------------------------------------
@@ -132,6 +148,10 @@ class MemoryService:
 
     # -- recall --------------------------------------------------------------
     def recall(self, req: RecallRequest) -> RecallResponse:
+        with self.metrics.timer("recall"):
+            return self._recall(req)
+
+    def _recall(self, req: RecallRequest) -> RecallResponse:
         user_id = self._user(req.user_id)
         limit = req.limit or self.cfg.memory.max_context_items
         # Hybrid fuses lexical + vector across memories and document chunks.
@@ -158,8 +178,43 @@ class MemoryService:
 
     # -- search --------------------------------------------------------------
     def search(self, req: SearchRequest) -> list[dict]:
-        results = self.search_svc.search(req, self.cfg.identity.default_user_id)
+        with self.metrics.timer("search"):
+            results = self.search_svc.search(req, self.cfg.identity.default_user_id)
         return [h.model_dump(exclude_none=True) for h in results]
+
+    # -- observability (read-only ops surfaces) ------------------------------
+    def health(self, worker_running: bool | None = None) -> HealthResponse:
+        return build_health(
+            db_ok=self._db.ping(), queue_ok=self._queue_ok(),
+            worker_enabled=self.cfg.workers.enabled,
+            worker_running=bool(worker_running))
+
+    def metrics_report(self) -> MetricsResponse:
+        return build_metrics(
+            uptime_s=self.metrics.uptime_s(), counts=self.jobs.counts(),
+            embeddings=self.embeddings.count(),
+            operations=self.metrics.snapshot())
+
+    def job_status(self) -> JobStatusResponse:
+        return build_job_status(
+            counts=self.jobs.counts(),
+            failures=self.jobs.recent_failed(
+                self.cfg.observability.recent_failures_limit),
+            redactor=self.redactor)
+
+    def connector_status(self) -> ConnectorStatusResponse:
+        enabled = {C.CONNECTOR_GITHUB: self.cfg.connectors.github.enabled,
+                   C.CONNECTOR_NOTION: self.cfg.connectors.notion.enabled}
+        return build_connector_status(
+            enabled=enabled, states=self.connector_state.all(),
+            redactor=self.redactor)
+
+    def _queue_ok(self) -> bool:
+        try:
+            self.jobs.counts()
+            return True
+        except Exception:  # noqa: BLE001 - readiness probe must not raise
+            return False
 
     # -- documents (RAG ingest) ----------------------------------------------
     def ingest_document(self, req: DocumentIngestRequest) -> dict:
@@ -249,6 +304,7 @@ class MemoryService:
             C.JOB_FORGET_EXPIRED: self._job_forget_expired,
             C.JOB_EMBED: self._job_embed,
             C.JOB_CONNECTOR_POLL: self._job_poll_connector,
+            C.JOB_DEDUP_MEMORIES: self._job_dedup_memories,
         }
 
     def _job_extract_session(self, payload: dict) -> None:
@@ -281,6 +337,37 @@ class MemoryService:
         text = self._object_text(otype, oid)
         if text:
             self._embed_now(otype, oid, text)
+
+    def _job_dedup_memories(self, payload: dict | None = None) -> None:
+        """Consolidate near-duplicate active memories. Within each visibility
+        group (user/project/scope) memories are re-embedded and clustered by
+        cosine; the highest-confidence / most-recent member of a cluster is kept
+        active while the rest are superseded (and their vectors dropped)."""
+        if not self.cfg.memory.dedup_enabled:
+            return
+        threshold = self.cfg.memory.dedup_similarity
+        groups: dict[tuple, list[Memory]] = {}
+        for mem in self.memories.active_all():
+            groups.setdefault((mem.user_id, mem.project_id, mem.scope), []).append(mem)
+
+        merged = 0
+        for group in groups.values():
+            if len(group) < 2:
+                continue
+            vectors = self.embedder.embed([m.content for m in group])
+            for cluster in cluster_by_cosine(vectors, threshold):
+                if len(cluster) < 2:
+                    continue
+                members = [group[i] for i in cluster]
+                winner = max(members, key=lambda m: (m.confidence, m.updated_at or ""))
+                for mem in members:
+                    if mem.id == winner.id:
+                        continue
+                    self.memories.set_status(mem.id, C.MEMORY_STATUS_SUPERSEDED)
+                    self.vector_index.delete(C.OBJECT_TYPE_MEMORY, mem.id)
+                    merged += 1
+        if merged:
+            self.audit.log("dedup_memories", "memory", None, {"merged": merged})
 
     def _job_poll_connector(self, payload: dict) -> None:
         name = payload["connector"]

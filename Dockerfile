@@ -34,6 +34,8 @@ ENV AICR_SERVER__HOST=0.0.0.0 \
     AICR_SERVER__PORT=28787 \
     AICR_STORAGE__DB_PATH=/data/memory.db \
     AICR_STORAGE__RAW_LOG_DIR=/data/sessions \
+    AICR_STORAGE__VECTOR_BACKEND=qdrant \
+    AICR_STORAGE__QDRANT_URL=http://127.0.0.1:6333 \
     QDRANT__STORAGE__STORAGE_PATH=/data/qdrant \
     QDRANT__SERVICE__HOST=127.0.0.1
 RUN mkdir -p /data/qdrant /data/sessions

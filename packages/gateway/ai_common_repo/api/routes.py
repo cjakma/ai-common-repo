@@ -2,11 +2,16 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import PlainTextResponse
 
 from ..core.models import (
     DocumentIngestRequest, HarnessClaimRequest, HarnessStatusUpdate,
     HarnessTaskCreate, RecallRequest, RecallResponse, SearchRequest,
     SessionIngestRequest, StoreMemoryRequest,
+)
+from ..observability import render_prometheus
+from ..observability.models import (
+    ConnectorStatusResponse, HealthResponse, JobStatusResponse,
 )
 from ..service import MemoryService
 
@@ -17,9 +22,38 @@ def _svc(request: Request) -> MemoryService:
     return request.app.state.service
 
 
+def _worker_running(request: Request) -> bool:
+    worker = getattr(request.app.state, "worker", None)
+    return bool(worker and worker.is_running())
+
+
 @router.get("/healthz")
 def healthz() -> dict:
     return {"status": "ok"}
+
+
+@router.get("/v1/health", response_model=HealthResponse)
+def health(request: Request) -> HealthResponse:
+    return _svc(request).health(worker_running=_worker_running(request))
+
+
+@router.get("/v1/metrics")
+def metrics(request: Request, format: str = "json"):
+    report = _svc(request).metrics_report()
+    if format == "prometheus":
+        return PlainTextResponse(render_prometheus(report),
+                                 media_type="text/plain; version=0.0.4")
+    return report
+
+
+@router.get("/v1/jobs", response_model=JobStatusResponse)
+def job_status(request: Request) -> JobStatusResponse:
+    return _svc(request).job_status()
+
+
+@router.get("/v1/connectors", response_model=ConnectorStatusResponse)
+def connector_status(request: Request) -> ConnectorStatusResponse:
+    return _svc(request).connector_status()
 
 
 @router.post("/v1/recall", response_model=RecallResponse)

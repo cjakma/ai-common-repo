@@ -125,9 +125,12 @@ def cmd_worker(args) -> int:
     import signal
     import threading
 
+    from ai_common_repo.observability import configure_logging
     from ai_common_repo.workers.runtime import build_runtime
 
     svc = _service(args)
+    configure_logging(svc.redactor, level=svc.cfg.observability.log_level,
+                      fmt=svc.cfg.observability.log_format)
     worker, scheduler = build_runtime(svc, svc.cfg)
     stop = threading.Event()
     for sig in (signal.SIGTERM, signal.SIGINT):

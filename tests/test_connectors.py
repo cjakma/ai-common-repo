@@ -238,6 +238,152 @@ def test_repolling_is_idempotent_and_replaces_changed_docs():
         assert stale == 0
 
 
+# -- SSRF / transport guard: additional edge cases ---------------------------
+def test_fetcher_rejects_more_ssrf_shapes():
+    f = AllowlistHttpFetcher(["api.github.com"], 5.0)
+    for bad in ["ftp://api.github.com/x",                 # non-https scheme
+                "file:///etc/passwd",                     # local file scheme
+                "https://evil.api.github.com/x",          # unlisted subdomain
+                "https://api.github.com.evil.com/x",      # suffix-spoof host
+                "https:///just/a/path"]:                  # missing host
+        with pytest.raises(ValueError):
+            f.get_json(bad)
+        with pytest.raises(ValueError):
+            f.post_json(bad, json={})
+
+
+def test_fetcher_accepts_case_insensitive_host_and_applies_timeout(monkeypatch):
+    """A mixed-case host still matches the allow-list, and the configured timeout
+    reaches the httpx client — verified without touching the network."""
+    import ai_common_repo.connectors.base as base
+
+    seen = {}
+
+    class _Resp:
+        def raise_for_status(self): ...
+        def json(self): return {"ok": True}
+
+    class _Client:
+        def __init__(self, *, timeout): seen["timeout"] = timeout
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def get(self, url, headers=None, params=None):
+            seen["url"] = url
+            return _Resp()
+        def post(self, url, headers=None, json=None): return _Resp()
+
+    monkeypatch.setattr(base.httpx, "Client", _Client)
+    f = base.AllowlistHttpFetcher(["api.github.com"], 7.5)
+    assert f.get_json("https://API.GitHub.COM/repos") == {"ok": True}
+    assert seen["timeout"] == 7.5 and seen["url"] == "https://API.GitHub.COM/repos"
+
+
+# -- GitHub cursor boundaries ------------------------------------------------
+def _github_cfg_repos(repos, **over):
+    cfg = load_config().connectors.github
+    cfg.repos = repos
+    for k, v in over.items():
+        setattr(cfg, k, v)
+    return cfg
+
+
+def test_github_multi_repo_cursors_advance_independently():
+    routes = {
+        "/repos/octo/a/issues": [
+            {"number": 1, "title": "A issue", "body": "x",
+             "updated_at": "2026-06-25T10:00:00Z", "state": "open",
+             "user": {"login": "a"},
+             "html_url": "https://github.com/octo/a/issues/1"}],
+        "/repos/octo/a/commits": [],
+        "/repos/octo/b/issues": [],   # b has nothing new this poll
+        "/repos/octo/b/commits": [],
+    }
+    conn = GithubConnector(_github_cfg_repos(["octo/a", "octo/b"]), FakeFetcher(routes))
+    nxt = json.loads(conn.sync(json.dumps({"octo/b": "2026-06-01T00:00:00Z"})).next_cursor)
+    assert nxt["octo/a"] == "2026-06-25T10:00:00Z"   # advanced from its item
+    assert nxt["octo/b"] == "2026-06-01T00:00:00Z"   # preserved untouched
+
+
+def test_github_empty_first_sync_adds_no_watermark():
+    routes = {"/repos/octo/repo/issues": [], "/repos/octo/repo/commits": [],
+              "/repos/octo/repo/readme": None}
+    result = GithubConnector(_github_cfg(), FakeFetcher(routes)).sync(None)
+    assert result.documents == []
+    assert json.loads(result.next_cursor) == {}   # nothing seen => no cursor key
+
+
+def test_github_malformed_cursor_is_treated_as_first_sync():
+    import base64
+    routes = {"/repos/octo/repo/issues": [], "/repos/octo/repo/commits": [],
+              "/repos/octo/repo/readme": {
+                  "encoding": "base64", "path": "README.md",
+                  "content": base64.b64encode(b"# hi").decode(),
+                  "html_url": "https://github.com/octo/repo/blob/main/README.md"}}
+    fetcher = FakeFetcher(routes)
+    result = GithubConnector(_github_cfg(), fetcher).sync("not-json{{")
+    # garbage cursor => since None => README fetched (first-sync behavior)
+    assert any(d.source_type == "github_readme" for d in result.documents)
+    assert any(u.endswith("/readme") for u, _, _ in fetcher.calls)
+
+
+def test_github_cursor_takes_max_across_resources():
+    routes = {
+        "/repos/octo/repo/issues": [
+            {"number": 1, "title": "old", "body": "b",
+             "updated_at": "2026-06-10T00:00:00Z", "state": "open",
+             "user": {"login": "a"},
+             "html_url": "https://github.com/octo/repo/issues/1"}],
+        "/repos/octo/repo/commits": [
+            {"sha": "deadbeef0", "html_url": "https://github.com/octo/repo/commit/d",
+             "commit": {"message": "newer", "author": {"date": "2026-06-15T00:00:00Z"}}}],
+    }
+    cursor = json.dumps({"octo/repo": "2026-06-01T00:00:00Z"})  # set => README skipped
+    result = GithubConnector(_github_cfg(), FakeFetcher(routes)).sync(cursor)
+    assert json.loads(result.next_cursor)["octo/repo"] == "2026-06-15T00:00:00Z"
+
+
+# -- Notion cursor boundaries ------------------------------------------------
+def test_notion_incremental_filters_after_and_advances_cursor():
+    routes = {
+        "/v1/databases/db1/query": {"results": [
+            {"id": "page1", "url": "https://notion.so/page1",
+             "last_edited_time": "2026-06-26T09:00:00Z",
+             "properties": {"Name": {"type": "title",
+                                     "title": [{"plain_text": "Runbook"}]}}}]},
+        "/v1/blocks/page1/children": {"results": [
+            {"type": "paragraph",
+             "paragraph": {"rich_text": [{"plain_text": "step one"}]}}]},
+    }
+    fetcher = FakeFetcher(routes)
+    cfg = load_config().connectors.notion
+    cfg.databases = ["db1"]
+    result = NotionConnector(cfg, fetcher).sync(json.dumps({"db1": "2026-06-01T00:00:00Z"}))
+
+    # incremental query carries the "after" filter derived from the prior cursor ...
+    query_body = next(b for u, _, b in fetcher.calls if u.endswith("/query"))
+    assert query_body["filter"]["last_edited_time"]["after"] == "2026-06-01T00:00:00Z"
+    # ... and the watermark advances to the newest page seen.
+    assert len(result.documents) == 1
+    assert json.loads(result.next_cursor)["db1"] == "2026-06-26T09:00:00Z"
+
+
+def test_notion_content_less_page_emits_no_doc_but_advances_cursor():
+    """The ``if not content`` branch: a page with no title and no block text still
+    advances the watermark so it is not re-fetched forever."""
+    routes = {
+        "/v1/databases/db1/query": {"results": [
+            {"id": "", "url": "https://notion.so/blank",
+             "last_edited_time": "2026-06-27T09:00:00Z",
+             "properties": {}}]},      # empty id + no title => title ""
+        "/v1/blocks//children": {"results": []},   # no block text
+    }
+    cfg = load_config().connectors.notion
+    cfg.databases = ["db1"]
+    result = NotionConnector(cfg, FakeFetcher(routes)).sync(None)
+    assert result.documents == []
+    assert json.loads(result.next_cursor)["db1"] == "2026-06-27T09:00:00Z"
+
+
 def test_token_read_from_env_is_sent_but_never_persisted():
     secret = "tok_DO_NOT_PERSIST_3141592653"
     os.environ["GITHUB_TOKEN"] = secret
