@@ -3,7 +3,7 @@
 <!-- version-sync -->
 > **버전** `0.1.0` · **GitHub** [cjakma/ai-common-repo](https://github.com/cjakma/ai-common-repo) `master` · **API 명세** [docs/API.md](docs/API.md) · **운영** [docs/OPERATIONS.md](docs/OPERATIONS.md)
 >
-> README 확인일 2026-10-15 · 샌드박스 Phase 6–9 병합 완료(샌드박스 삭제) · 벡터 스토어 = 내장 Qdrant(활성 메모리 11,424건 = 포인트 11,424개) · 임베딩: 현재 해시(256차원) → **EmbeddingGemma-300M(768차원) 전환은 2026-10-16 03:30 `aicr-nightly-embed.timer`가 수행** · 테스트 120 passed / 1 skipped, ruff clean
+> README 확인일 2026-10-15 · 샌드박스 Phase 6–9 병합 완료(샌드박스 삭제) · 벡터 스토어 = 내장 Qdrant(활성 메모리 493건 = 포인트 493개; 만료된 blacklist-guard 레코드 10,932건 정리 후) · 임베딩: 현재 해시(256차원) → **EmbeddingGemma-300M(768차원) 전환은 2026-10-16 03:30 `aicr-nightly-embed.timer`가 수행** · 테스트 120 passed / 1 skipped, ruff clean
 <!-- /version-sync -->
 
 Local-first **shared long-term memory / context gateway** for AI coding agents
@@ -69,7 +69,7 @@ with EmbeddingGemma's query/document prompts and a 2000-char input cut (the mode
 2048 tokens). `scripts/nightly-embed.sh` (systemd `aicr-nightly-embed.timer`, daily 03:30):
 
 - first run: builds collection `ai_common_repo_embgemma768` with `scripts/reembed.py` while
-  the gateway keeps serving the old one (~1h20m on one core), then routes
+  the gateway keeps serving the old one (~2.3 memories/s on one core), then routes
   `models.tasks.embedding` to `embed-gemma`, points `storage.qdrant_collection` at the new
   collection, restarts, embeds what arrived meanwhile and verifies `/v1/health` — any
   failure restores `config.yaml.bak-pre-switch`. The old `ai_common_repo` collection stays

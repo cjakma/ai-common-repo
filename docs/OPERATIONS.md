@@ -30,7 +30,7 @@ All are `GET` and side-effect free.
     {"name": "job_queue", "status": "ok"},
     {"name": "worker",    "status": "ok", "detail": "running"}, // only when workers.enabled
     {"name": "vector_store", "status": "ok",
-     "info": {"backend": "qdrant", "collection": "ai_common_repo", "points": 11424,
+     "info": {"backend": "qdrant", "collection": "ai_common_repo", "points": 493,
               "status": "green", "vector_size": 256}},
     {"name": "embedding", "status": "ok",
      "info": {"model": "hash-3gram-256", "backend": "hash-fallback"}}

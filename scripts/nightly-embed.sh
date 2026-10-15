@@ -2,14 +2,14 @@
 # Nightly embedding maintenance for ai-common-repo (systemd aicr-nightly-embed.timer, 03:30).
 #
 # Before the switch (first night): build the EmbeddingGemma collection while the gateway keeps
-# serving from the old hash-embedding one (~1h20m for 11k memories on one core), then route the
+# serving from the old hash-embedding one (~2.3 memories/s on one core), then route the
 # embedding task to embed-gemma + point storage at the new collection, restart, embed whatever
 # was stored meanwhile, and verify. Any failure after the config change restores the backup.
 # After the switch (every later night): embed memories stored while embed-gemma was down
 # (stores are fail-soft) and prune points of forgotten memories.
 #
-# Re-embedding runs at night because embed-gemma has one thread and the full pass keeps that
-# core busy for over an hour. The old collection is kept for rollback.
+# Re-embedding runs at night because embed-gemma has one thread and a full pass keeps that
+# core busy for the whole run. The old collection is kept for rollback.
 set -Eeuo pipefail   # -E: the rollback ERR trap also fires inside functions
 
 SRC=/home/ubuntu/web-service/ai-common-repo
