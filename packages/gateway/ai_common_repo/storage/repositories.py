@@ -396,6 +396,12 @@ class DocumentRepository:
         ).fetchall()
         return [r["id"] for r in rows]
 
+    def all_chunks(self) -> list[tuple[str, str]]:
+        """(chunk_id, content) for every chunk — re-embedding walks the corpus."""
+        rows = self._db.conn.execute(
+            "SELECT id, content FROM document_chunks ORDER BY id").fetchall()
+        return [(r["id"], r["content"]) for r in rows]
+
     def purge(self, document_id: str) -> None:
         """Delete a document and its chunks, keeping the contentless FTS index in
         sync via the special fts5 'delete' command (it needs the old content)."""

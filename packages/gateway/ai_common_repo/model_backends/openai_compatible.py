@@ -43,11 +43,24 @@ class OpenAICompatibleBackend:
         return resp.json()
 
     # -- embedding (OpenAI /v1/embeddings shape) -----------------------------
+    @property
+    def model(self) -> str:
+        return self._cfg.embedding_model or self._cfg.chat_model or "external"
+
     def embed(self, texts: list[str]) -> list[list[float]]:
-        model = self._cfg.embedding_model or self._cfg.chat_model
+        """Embed stored content (memories, document chunks)."""
+        return self._embed(texts, self._cfg.embedding_document_prefix)
+
+    def embed_query(self, texts: list[str]) -> list[list[float]]:
+        """Embed search queries (models with asymmetric prompts differ here)."""
+        return self._embed(texts, self._cfg.embedding_query_prefix)
+
+    def _embed(self, texts: list[str], prefix: str) -> list[list[float]]:
+        limit = self._cfg.embedding_max_chars
+        inputs = [prefix + (t[:limit] if limit else t) for t in texts]
         with httpx.Client(timeout=self._cfg.timeout_s) as client:
             resp = client.post(f"{self._base}/embeddings",
-                               json={"model": model, "input": texts},
+                               json={"model": self.model, "input": inputs},
                                headers=self._headers)
             resp.raise_for_status()
             data = resp.json()

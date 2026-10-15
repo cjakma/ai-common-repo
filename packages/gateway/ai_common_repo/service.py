@@ -4,6 +4,7 @@ thin shells over this single object."""
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -28,7 +29,8 @@ from .observability import (
     build_metrics,
 )
 from .observability.models import (
-    ConnectorStatusResponse, HealthResponse, JobStatusResponse, MetricsResponse,
+    ComponentHealth, ConnectorStatusResponse, HealthResponse, JobStatusResponse,
+    MetricsResponse,
 )
 from .privacy.redactor import Redactor
 from .profiles.builder import ProfileBuilder
@@ -45,6 +47,8 @@ from .storage.repositories import (
     MemoryRepository, ProfileRepository, SessionRepository,
 )
 from .workers.queue import SqliteJobQueue
+
+_log = logging.getLogger("ai_common_repo.service")
 
 
 class MemoryService:
@@ -187,7 +191,23 @@ class MemoryService:
         return build_health(
             db_ok=self._db.ping(), queue_ok=self._queue_ok(),
             worker_enabled=self.cfg.workers.enabled,
-            worker_running=bool(worker_running))
+            worker_running=bool(worker_running),
+            extra=[self._vector_store_health(), self._embedding_health()])
+
+    def _vector_store_health(self) -> ComponentHealth:
+        ok, info = self.vector_index.status()
+        return ComponentHealth(name="vector_store", status="ok" if ok else "down",
+                               detail=info.pop("detail", None), info=info)
+
+    def _embedding_health(self) -> ComponentHealth:
+        info = {"model": getattr(self.embedder, "model", "external"),
+                "backend": getattr(self.embedder, "name", type(self.embedder).__name__)}
+        probe = getattr(self.embedder, "health", None)
+        if probe is None:  # offline hash embedder: always available
+            return ComponentHealth(name="embedding", status="ok", info=info)
+        h = probe()
+        return ComponentHealth(name="embedding", status="ok" if h.status == "ok" else "down",
+                               detail=h.detail, info={**info, "base_url": h.base_url})
 
     def metrics_report(self) -> MetricsResponse:
         return build_metrics(
@@ -435,9 +455,15 @@ class MemoryService:
             self._embed_now(object_type, object_id, text)
 
     def _embed_now(self, object_type: str, object_id: str, text: str) -> None:
-        vector = self.embedder.embed([text])[0]
-        model = getattr(self.embedder, "model", "external")
-        self.vector_index.index(object_type, object_id, vector, model=model)
+        # Fail soft: the object is already stored; a missing vector only drops
+        # it from vector search until scripts/reembed.py fills it in.
+        try:
+            vector = self.embedder.embed([text])[0]
+            model = getattr(self.embedder, "model", "external")
+            self.vector_index.index(object_type, object_id, vector, model=model)
+        except Exception as exc:  # noqa: BLE001 — any backend failure degrades
+            _log.warning("embedding skipped for %s %s (filled later): %s",
+                         object_type, object_id, exc)
 
     def _object_text(self, object_type: str, object_id: str) -> str | None:
         if object_type == C.OBJECT_TYPE_MEMORY:

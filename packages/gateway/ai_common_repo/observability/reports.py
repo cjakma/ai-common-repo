@@ -13,10 +13,13 @@ from .models import (
 
 
 def build_health(*, db_ok: bool, queue_ok: bool, worker_enabled: bool,
-                 worker_running: bool) -> HealthResponse:
+                 worker_running: bool,
+                 extra: list[ComponentHealth] | None = None) -> HealthResponse:
     """Liveness is always true while we are serving; readiness requires the
     dependencies a read needs (DB + queue). The worker is reported but not
-    required — the gateway answers reads without one."""
+    required — the gateway answers reads without one. ``extra`` components
+    (vector store, embedding backend) degrade the status but not readiness:
+    search falls back to FTS without them."""
     components = [
         ComponentHealth(name="database", status="ok" if db_ok else "down"),
         ComponentHealth(name="job_queue", status="ok" if queue_ok else "down"),
@@ -25,8 +28,10 @@ def build_health(*, db_ok: bool, queue_ok: bool, worker_enabled: bool,
         components.append(ComponentHealth(
             name="worker", status="ok" if worker_running else "down",
             detail="running" if worker_running else "not running"))
+    components += extra or []
     ready = db_ok and queue_ok
-    return HealthResponse(status="ok" if ready else "degraded",
+    all_ok = all(c.status == "ok" for c in components)
+    return HealthResponse(status="ok" if ready and all_ok else "degraded",
                           live=True, ready=ready, components=components)
 
 

@@ -915,6 +915,18 @@
               }
             ],
             "title": "Detail"
+          },
+          "info": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Info"
           }
         },
         "type": "object",

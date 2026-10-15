@@ -2,6 +2,8 @@
 status). Read-only views — they never echo secrets (values are redacted upstream)."""
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -9,6 +11,7 @@ class ComponentHealth(BaseModel):
     name: str
     status: str  # "ok" | "down"
     detail: str | None = None
+    info: dict[str, Any] | None = None
 
 
 class HealthResponse(BaseModel):

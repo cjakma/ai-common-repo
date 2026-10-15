@@ -52,6 +52,11 @@ class VectorIndex(ABC):
     @abstractmethod
     def delete(self, object_type: str, object_id: str) -> None: ...
 
+    def status(self) -> tuple[bool, dict]:
+        """(ok, info) for /v1/health. SQLite-backed fallbacks share the DB, so
+        they are healthy whenever the database is."""
+        return True, {"backend": type(self).__name__}
+
 
 class BruteForceVectorIndex(VectorIndex):
     def __init__(self, embeddings: EmbeddingRepository):
@@ -149,6 +154,19 @@ class QdrantVectorIndex(VectorIndex):
         self._client.delete(
             self._collection,
             points_selector=[_point_id(object_type, object_id)])
+
+    def status(self) -> tuple[bool, dict]:
+        info: dict = {"backend": "qdrant", "collection": self._collection}
+        try:
+            if not self._client.collection_exists(self._collection):
+                return True, {**info, "points": 0, "detail": "collection not created yet"}
+            col = self._client.get_collection(self._collection)
+        except Exception as exc:  # noqa: BLE001 — report, never raise from health
+            return False, {**info, "detail": f"unreachable: {type(exc).__name__}"}
+        vectors = col.config.params.vectors
+        return str(col.status).endswith("green"), {
+            **info, "points": col.points_count, "status": str(col.status).split(".")[-1].lower(),
+            "vector_size": getattr(vectors, "size", None)}
 
     # -- collection lifecycle ------------------------------------------------
     def _ensure_collection(self, size: int) -> None:

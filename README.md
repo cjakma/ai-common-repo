@@ -3,7 +3,7 @@
 <!-- version-sync -->
 > **버전** `0.1.0` · **GitHub** [cjakma/ai-common-repo](https://github.com/cjakma/ai-common-repo) `master` · **API 명세** [docs/API.md](docs/API.md) · **운영** [docs/OPERATIONS.md](docs/OPERATIONS.md)
 >
-> README 확인일 2026-10-15 · 2026-10-15 샌드박스(ai-common-repo-2nd, Phase 6–9) 병합·재배포 — 벡터 스토어 = 내장 Qdrant(활성 메모리 11,424건 = Qdrant 포인트 11,424개), 테스트 117 passed / 1 skipped, ruff clean
+> README 확인일 2026-10-15 · 샌드박스 Phase 6–9 병합 완료(샌드박스 삭제) · 벡터 스토어 = 내장 Qdrant(활성 메모리 11,424건 = 포인트 11,424개) · 임베딩: 현재 해시(256차원) → **EmbeddingGemma-300M(768차원) 전환은 2026-10-16 03:30 `aicr-nightly-embed.timer`가 수행** · 테스트 120 passed / 1 skipped, ruff clean
 <!-- /version-sync -->
 
 Local-first **shared long-term memory / context gateway** for AI coding agents
@@ -61,6 +61,25 @@ Deploy/redeploy with `scripts/deploy.sh` — it tags the running image as
 `ai-common-repo:rollback`, rebuilds from this checkout and health-checks `:28787`.
 After moving from a non-Qdrant vector backend, run `scripts/backfill_qdrant.py` once
 inside the container (`sudo docker exec -i -w /app ai-common-repo python - < scripts/backfill_qdrant.py`).
+
+**Embedding model.** EmbeddingGemma-300M (Q8_0 GGUF) runs as pm2 `embed-gemma`
+(`scripts/run-embedding-server.sh`: llama.cpp `--embeddings`, 1 thread, `172.18.0.1:4176`,
+ufw allows 172.18.0.0/16 only). `/data/config.yaml` defines it as backend `embed-gemma`
+with EmbeddingGemma's query/document prompts and a 2000-char input cut (the model takes
+2048 tokens). `scripts/nightly-embed.sh` (systemd `aicr-nightly-embed.timer`, daily 03:30):
+
+- first run: builds collection `ai_common_repo_embgemma768` with `scripts/reembed.py` while
+  the gateway keeps serving the old one (~1h20m on one core), then routes
+  `models.tasks.embedding` to `embed-gemma`, points `storage.qdrant_collection` at the new
+  collection, restarts, embeds what arrived meanwhile and verifies `/v1/health` — any
+  failure restores `config.yaml.bak-pre-switch`. The old `ai_common_repo` collection stays
+  for rollback;
+- every later run: embeds memories stored while `embed-gemma` was down and prunes points of
+  forgotten memories (`reembed.py --prune`).
+
+Embedding failures never fail a request: search falls back to FTS-only results and a store
+still succeeds (its vector is filled by the next nightly run). `journalctl -u aicr-nightly-embed`
+shows each run.
 
 For local development the CLI runs from a project venv via `-m` (no global install required):
 
@@ -203,8 +222,9 @@ Built on top of that (test-covered, degrade-gracefully offline):
   The vector store is **Qdrant** (`storage.vector_backend: qdrant`; the image sets
   `AICR_STORAGE__QDRANT_URL=http://127.0.0.1:6333` for the bundled server — with no
   URL the client is in-memory, which is for tests only). Brute-force / sqlite-vec
-  remain as offline fallbacks. No embedding model is configured, so vectors are the
-  deterministic 256-dim hash embedding. Documents are chunked, embedded, and
+  remain as offline fallbacks. Vectors come from the configured embedding backend
+  (EmbeddingGemma-300M, see "Embedding model"), else the deterministic 256-dim hash
+  embedding (ASCII n-grams only — it ignores Korean). Documents are chunked, embedded, and
   returned alongside memories with source attribution. FTS queries quote every
   term, so words like `AND` / `OR` / `NOT` / `NEAR` are matched as text.
 - **MCP server** (`mcp/`, `POST /mcp`): spec-compliant JSON-RPC over
@@ -220,7 +240,8 @@ Built on top of that (test-covered, degrade-gracefully offline):
   outbox + async HMAC-signed HTTP delivery with retry/backoff and dead-lettering,
   publishing harness task status changes. See "Event subscription / webhooks".
 - **Observability** (`observability/`, read-only): `/v1/health` (liveness +
-  readiness), `/v1/metrics` (job depth/throughput/failure-rate + search latency,
+  readiness, plus `vector_store` — Qdrant collection, point count, vector size — and
+  `embedding` — model and backend reachability), `/v1/metrics` (job depth/throughput/failure-rate + search latency,
   JSON or Prometheus), `/v1/jobs` and `/v1/connectors` (queue backlog, recent
   failures, sync watermarks). Structured JSON logging correlates request-id /
   job-id; every surface and log line is redacted (hints, not values). See

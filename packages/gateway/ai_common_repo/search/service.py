@@ -10,6 +10,8 @@ Project/scope filtering matches the memory rules: a project query also sees
 cross-project ``user``/``global`` memories, but only its own project's docs."""
 from __future__ import annotations
 
+import logging
+
 from ..core import constants as C
 from ..core.models import Memory, SearchHit, SearchRequest
 from ..model_backends.base import EmbeddingBackend
@@ -21,6 +23,8 @@ from .vector import VectorIndex
 # Over-fetch before scope filtering so post-filter results still fill the limit.
 _CANDIDATE_FACTOR = 5
 _MIN_CANDIDATES = 50
+
+_log = logging.getLogger("ai_common_repo.search")
 
 
 class SearchService:
@@ -78,12 +82,19 @@ class SearchService:
     # -- vector --------------------------------------------------------------
     def _vector(self, req: SearchRequest, q: str, user_id: str,
                 include_docs: bool) -> list[SearchHit]:
-        qvec = self._embedder.embed([q])[0]
         object_types = [C.OBJECT_TYPE_MEMORY]
         if include_docs:
             object_types.append(C.OBJECT_TYPE_CHUNK)
         cand = max(req.limit * _CANDIDATE_FACTOR, _MIN_CANDIDATES)
-        raw = self._index.query(qvec, object_types, cand)
+        # Fail soft: an unreachable embedding backend or vector store must not
+        # fail the request — hybrid search then answers from FTS alone.
+        try:
+            embed_query = getattr(self._embedder, "embed_query", self._embedder.embed)
+            qvec = embed_query([q])[0]
+            raw = self._index.query(qvec, object_types, cand)
+        except Exception as exc:  # noqa: BLE001 — any backend failure degrades
+            _log.warning("vector search skipped, FTS only: %s", exc)
+            return []
 
         mem_ids = [oid for ot, oid, _ in raw if ot == C.OBJECT_TYPE_MEMORY]
         chunk_ids = [oid for ot, oid, _ in raw if ot == C.OBJECT_TYPE_CHUNK]

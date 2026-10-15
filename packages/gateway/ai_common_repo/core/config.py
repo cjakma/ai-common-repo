@@ -64,6 +64,13 @@ class BackendConfig(BaseModel):
     embedding_provider: str | None = None
     embedding_base_url: str | None = None
     embedding_model: str | None = None
+    # Task prompts some embedding models are trained with (EmbeddingGemma:
+    # "task: search result | query: " / "title: none | text: "). Empty => none.
+    embedding_query_prefix: str = ""
+    embedding_document_prefix: str = ""
+    # Texts are cut to this many characters before embedding so they fit the
+    # model's context (EmbeddingGemma: 2048 tokens). 0 => no limit.
+    embedding_max_chars: int = 0
     timeout_s: float = 60.0
 
 

@@ -19,7 +19,7 @@ AI 도구들(Claude Code, Hermes, OpenClaw, OpenCode)이 공유하는 **장기 �
 
 | 그룹 | Method | Path |
 |---|---|---|
-| 상태 | GET | `/healthz`, `/v1/health`, `/v1/metrics`, `/v1/jobs`, `/v1/connectors`, `/v1/model-backends/health` |
+| 상태 | GET | `/healthz`, `/v1/health`(DB·큐·Qdrant·임베딩 상태), `/v1/metrics`, `/v1/jobs`, `/v1/connectors`, `/v1/model-backends/health` |
 | 기억 | POST | `/v1/memory`, `/v1/recall`, `/v1/search`, `/v1/documents`, `/v1/sessions/ingest`, `/v1/memory/{memory_id}/forget` |
 | | GET | `/v1/profile` |
 | 하네스 큐 | POST | `/v1/harness/tasks`, `/v1/harness/tasks/claim`, `/v1/harness/tasks/{task_id}/status` |
